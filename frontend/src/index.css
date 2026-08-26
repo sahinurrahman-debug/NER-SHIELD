@@ -1,0 +1,10 @@
+
+:root { font-family: Inter, system-ui, sans-serif; color: #e2e8f0; background: #0f172a; }
+* { box-sizing: border-box; } body { margin: 0; } main { max-width: 1280px; margin: auto; padding: 24px; }
+header { display: flex; justify-content: space-between; align-items: center; } h1, h2, p { margin-top: 0; }
+.badge { background: #f59e0b; color: #111827; font-weight: 800; padding: 6px 10px; border-radius: 999px; }
+.notice, .error { border-left: 4px solid #f59e0b; background: #1e293b; padding: 12px; }.error { border-color: #ef4444; }
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 20px 0; }
+.card { background: #1e293b; padding: 16px; border-radius: 10px; text-transform: capitalize; border-top: 4px solid #64748b; }.card strong { display: block; font-size: 2rem; }.low { border-color: #22c55e; }.moderate { border-color: #eab308; }.high { border-color: #f97316; }.critical { border-color: #dc2626; }
+.layout { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }.map-wrap, aside { background: #1e293b; border-radius: 10px; overflow: hidden; }.map { height: 560px; } aside { padding: 16px; max-height: 560px; overflow-y: auto; }.report { border-bottom: 1px solid #334155; padding: 12px 0; }.report p { margin: 6px 0; }
+@media (max-width: 800px) { .cards, .layout { grid-template-columns: 1fr; } .map { height: 420px; } }
