@@ -1,0 +1,29 @@
+
+# secrets and local data
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node/Vite
+frontend/node_modules/
+frontend/dist/
+
+# Flutter
+mobile/.dart_tool/
+mobile/build/
+mobile/.idea/
+
+# runtime files
+backend/uploads/
+backend/models/*.joblib
+!backend/models/.gitkeep
+ml/data/*.csv
+!ml/data/README.md
