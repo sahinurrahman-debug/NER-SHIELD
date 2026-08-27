@@ -21,9 +21,19 @@ MODEL_PATH = os.getenv("MODEL_PATH", "/app/models/risk_model.joblib")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/data/uploads")
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "8"))
 CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")]
+
+# Must exactly match the training notebook's FEATURES list and order (see ml/notebooks).
 FEATURES = [
-    "rain_1h_mm", "rain_24h_mm", "rain_72h_mm", "soil_moisture_pct",
-    "slope_deg", "historical_density", "distance_to_road_m", "vegetation_index",
+    "Rainfall_mm", "Slope_Angle", "Soil_Saturation", "Vegetation_Cover",
+    "Rainfall_3Day", "Rainfall_7Day", "Aspect", "Elevation_m", "NDVI_Index",
+    "Land_Use_Urban", "Land_Use_Forest", "Land_Use_Agriculture",
+    "Earthquake_Activity", "Proximity_to_Water", "Distance_to_Road_m",
+    "Temperature_C", "Humidity_percent", "Soil_pH", "Clay_Content",
+    "Sand_Content", "Silt_Content", "Soil_Erosion_Rate",
+    "Historical_Landslide_Count", "Soil_Type_Gravel", "Soil_Type_Sand",
+    "Soil_Type_Silt", "Soil_Type_Clay", "Pore_Water_Pressure_kPa",
+    "Soil_Moisture_Content", "Microseismic_Activity", "Acoustic_Emission_dB",
+    "Soil_Strain", "Soil_Temperature_C", "TDR_Reflection_Index",
 ]
 Severity = Literal["low", "moderate", "high", "critical"]
 
@@ -70,14 +80,40 @@ class FieldReport(Base):
 
 
 class RiskFeatures(BaseModel):
-    rain_1h_mm: float = Field(ge=0, le=1000)
-    rain_24h_mm: float = Field(ge=0, le=2000)
-    rain_72h_mm: float = Field(ge=0, le=4000)
-    soil_moisture_pct: float = Field(ge=0, le=100)
-    slope_deg: float = Field(ge=0, le=90)
-    historical_density: float = Field(ge=0, le=1)
-    distance_to_road_m: float = Field(ge=0, le=100000)
-    vegetation_index: float = Field(ge=-1, le=1)
+    Rainfall_mm: float = Field(ge=0, le=500)
+    Slope_Angle: float = Field(ge=0, le=90)
+    Soil_Saturation: float = Field(ge=0, le=1)
+    Vegetation_Cover: float = Field(ge=0, le=1)
+    Rainfall_3Day: float = Field(ge=0, le=1000)
+    Rainfall_7Day: float = Field(ge=0, le=1500)
+    Aspect: float = Field(ge=0, le=360)
+    Elevation_m: float = Field(ge=0, le=4000)
+    NDVI_Index: float = Field(ge=-1, le=1)
+    Land_Use_Urban: Literal[0, 1]
+    Land_Use_Forest: Literal[0, 1]
+    Land_Use_Agriculture: Literal[0, 1]
+    Earthquake_Activity: float = Field(ge=0, le=10)
+    Proximity_to_Water: float = Field(ge=0, le=1)
+    Distance_to_Road_m: float = Field(ge=0, le=2000)
+    Temperature_C: float = Field(ge=-10, le=50)
+    Humidity_percent: float = Field(ge=0, le=100)
+    Soil_pH: float = Field(ge=0, le=14)
+    Clay_Content: float = Field(ge=0, le=100)
+    Sand_Content: float = Field(ge=0, le=100)
+    Silt_Content: float = Field(ge=0, le=100)
+    Soil_Erosion_Rate: float = Field(ge=0, le=100)
+    Historical_Landslide_Count: float = Field(ge=0, le=20)
+    Soil_Type_Gravel: Literal[0, 1]
+    Soil_Type_Sand: Literal[0, 1]
+    Soil_Type_Silt: Literal[0, 1]
+    Soil_Type_Clay: Literal[0, 1]
+    Pore_Water_Pressure_kPa: float = Field(ge=0, le=300)
+    Soil_Moisture_Content: float = Field(ge=0, le=1)
+    Microseismic_Activity: float = Field(ge=0, le=1)
+    Acoustic_Emission_dB: float = Field(ge=0, le=150)
+    Soil_Strain: float = Field(ge=0, le=1)
+    Soil_Temperature_C: float = Field(ge=-10, le=50)
+    TDR_Reflection_Index: float = Field(ge=0, le=3)
 
 
 class ReportCreate(BaseModel):
@@ -118,34 +154,34 @@ def severity_for(score: float) -> str:
 
 
 def fallback_probability(p: RiskFeatures) -> float:
-    """Transparent demo score; it is not a trained or authoritative forecast."""
+    """Transparent demo score built from the 4 features that actually drive risk
+    in the training data (Rainfall_mm, Slope_Angle, Soil_Saturation, Vegetation_Cover);
+    it is not a trained or authoritative forecast."""
     score = (
-        min(p.rain_1h_mm / 60, 1) * 0.10
-        + min(p.rain_24h_mm / 180, 1) * 0.25
-        + min(p.rain_72h_mm / 450, 1) * 0.20
-        + min(p.soil_moisture_pct / 100, 1) * 0.15
-        + min(p.slope_deg / 60, 1) * 0.15
-        + min(p.historical_density, 1) * 0.10
-        + (1 - min(p.distance_to_road_m / 500, 1)) * 0.03
-        + (1 - max(min(p.vegetation_index, 1), -1)) / 2 * 0.02
+        min(p.Soil_Saturation, 1) * 0.30
+        + min(p.Rainfall_mm / 300, 1) * 0.25
+        + min(p.Slope_Angle / 80, 1) * 0.20
+        + (1 - min(p.Vegetation_Cover, 1)) * 0.15
+        + min(p.Rainfall_3Day / 600, 1) * 0.05
+        + min(p.Historical_Landslide_Count / 6, 1) * 0.05
     )
     return float(np.clip(score, 0, 1))
 
 
 def contributing_factors(p: RiskFeatures) -> list[str]:
     factors: list[str] = []
-    if p.rain_24h_mm >= 100:
-        factors.append("heavy 24-hour rainfall")
-    if p.rain_72h_mm >= 200:
-        factors.append("prolonged 72-hour rainfall")
-    if p.soil_moisture_pct >= 70:
-        factors.append("high soil moisture")
-    if p.slope_deg >= 30:
+    if p.Soil_Saturation >= 0.7:
+        factors.append("high soil saturation")
+    if p.Rainfall_mm >= 150:
+        factors.append("heavy recent rainfall")
+    if p.Rainfall_3Day >= 300:
+        factors.append("prolonged 3-day rainfall")
+    if p.Slope_Angle >= 45:
         factors.append("steep slope")
-    if p.historical_density >= 0.5:
-        factors.append("high historical landslide density")
-    if p.distance_to_road_m <= 50:
-        factors.append("close to road/infrastructure")
+    if p.Vegetation_Cover <= 0.3:
+        factors.append("sparse vegetation cover")
+    if p.Historical_Landslide_Count >= 2:
+        factors.append("prior landslide history in area")
     return factors or ["no dominant trigger detected"]
 
 
