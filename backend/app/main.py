@@ -21,6 +21,7 @@ MODEL_PATH = os.getenv("MODEL_PATH", "/app/models/risk_model.joblib")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/data/uploads")
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "8"))
 CORS_ORIGINS = [x.strip() for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")]
+Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 
 # Must exactly match the training notebook's FEATURES list and order (see ml/notebooks).
 FEATURES = [
@@ -217,7 +218,6 @@ def seed_demo_data() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global loaded_model
-    Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)  # MVP only; use Alembic migrations before production.
     if Path(MODEL_PATH).exists():
         candidate = joblib.load(MODEL_PATH)
