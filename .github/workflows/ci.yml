@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql+psycopg://test:test@localhost:5432/test
+      UPLOAD_DIR: ./uploads
     defaults:
       run:
         working-directory: backend
