@@ -31,8 +31,8 @@ Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 # an X-API-Key header on the write endpoints below before any real deployment.
 API_KEY = os.getenv("API_KEY")
 
-CLICKSEND_USERNAME = os.getenv("CLICKSEND_USERNAME")
-CLICKSEND_API_KEY = os.getenv("CLICKSEND_API_KEY")
+TEXTBEE_API_KEY = os.getenv("TEXTBEE_API_KEY")
+TEXTBEE_DEVICE_ID = os.getenv("TEXTBEE_DEVICE_ID")  # optional; blank uses the account's default device
 ALERT_SMS_RECIPIENTS = [x.strip() for x in os.getenv("ALERT_SMS_RECIPIENTS", "").split(",") if x.strip()]
 ALERT_SEVERITY_THRESHOLD = os.getenv("ALERT_SEVERITY_THRESHOLD", "high")
 ALERT_COOLDOWN_MINUTES = int(os.getenv("ALERT_COOLDOWN_MINUTES", "15"))
@@ -317,24 +317,27 @@ logger = logging.getLogger("ner_shield")
 
 
 def send_sms(to: str, body: str) -> str:
-    """Sends via ClickSend if credentials are configured; otherwise returns
-    "simulated" so the alert pipeline stays fully testable without a live SMS account."""
-    if not (CLICKSEND_USERNAME and CLICKSEND_API_KEY):
+    """Sends via textbee.dev (your own Android phone's SIM, through their gateway
+    app) if TEXTBEE_API_KEY is configured; otherwise returns "simulated" so the
+    alert pipeline stays fully testable without a live SMS account."""
+    if not TEXTBEE_API_KEY:
         return "simulated"
+    payload = {"recipients": [to], "message": body}
+    if TEXTBEE_DEVICE_ID:
+        payload["deviceId"] = TEXTBEE_DEVICE_ID
     try:
         response = httpx.post(
-            "https://rest.clicksend.com/v3/sms/send",
-            auth=(CLICKSEND_USERNAME, CLICKSEND_API_KEY),
-            json={"messages": [{"source": "ner-shield", "body": body, "to": to}]},
+            "https://api.textbee.dev/api/v1/gateway/send-sms",
+            headers={"x-api-key": TEXTBEE_API_KEY},
+            json=payload,
             timeout=10,
         )
-        data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-        if response.status_code < 300 and data.get("response_code") == "SUCCESS":
+        if response.status_code < 300:
             return "sent"
-        logger.error("ClickSend to %s failed: HTTP %s: %s", to, response.status_code, data or response.text)
+        logger.error("Textbee to %s failed: HTTP %s: %s", to, response.status_code, response.text)
         return "failed"
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.error("ClickSend to %s raised an exception: %s", to, exc)
+    except httpx.HTTPError as exc:
+        logger.error("Textbee to %s raised an exception: %s", to, exc)
         return "failed"
 
 
