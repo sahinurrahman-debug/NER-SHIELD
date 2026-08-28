@@ -31,6 +31,8 @@ Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 # an X-API-Key header on the write endpoints below before any real deployment.
 API_KEY = os.getenv("API_KEY")
 
+SMS_PROVIDER = os.getenv("SMS_PROVIDER", "fast2sms")  # "fast2sms" | "twilio"
+FAST2SMS_API_KEY = os.getenv("FAST2SMS_API_KEY")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER")
@@ -318,8 +320,38 @@ logger = logging.getLogger("ner_shield")
 
 
 def send_sms(to: str, body: str) -> str:
-    """Sends via Twilio if credentials are configured; otherwise returns "simulated"
-    so the alert pipeline is fully testable without a live SMS account."""
+    """Dispatches via whichever SMS_PROVIDER is configured; returns "simulated" if
+    that provider's credentials are missing, so the alert pipeline stays fully
+    testable without a live SMS account."""
+    if SMS_PROVIDER == "twilio":
+        return send_sms_twilio(to, body)
+    return send_sms_fast2sms(to, body)
+
+
+def send_sms_fast2sms(to: str, body: str) -> str:
+    if not FAST2SMS_API_KEY:
+        return "simulated"
+    number = to.lstrip("+")
+    if number.startswith("91") and len(number) == 12:
+        number = number[2:]  # Fast2SMS expects bare 10-digit Indian numbers, no country code
+    try:
+        response = httpx.post(
+            "https://www.fast2sms.com/dev/bulkV2",
+            headers={"Authorization": FAST2SMS_API_KEY, "Content-Type": "application/json"},
+            json={"message": body, "route": "q", "numbers": number, "language": "unicode"},
+            timeout=10,
+        )
+        data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+        if response.status_code < 300 and data.get("return") is True:
+            return "sent"
+        logger.error("Fast2SMS to %s failed: HTTP %s: %s", to, response.status_code, data or response.text)
+        return "failed"
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.error("Fast2SMS to %s raised an exception: %s", to, exc)
+        return "failed"
+
+
+def send_sms_twilio(to: str, body: str) -> str:
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER):
         return "simulated"
     try:
