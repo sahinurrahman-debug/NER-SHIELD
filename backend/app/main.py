@@ -31,7 +31,8 @@ Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 # an X-API-Key header on the write endpoints below before any real deployment.
 API_KEY = os.getenv("API_KEY")
 
-FAST2SMS_API_KEY = os.getenv("FAST2SMS_API_KEY")
+CLICKSEND_USERNAME = os.getenv("CLICKSEND_USERNAME")
+CLICKSEND_API_KEY = os.getenv("CLICKSEND_API_KEY")
 ALERT_SMS_RECIPIENTS = [x.strip() for x in os.getenv("ALERT_SMS_RECIPIENTS", "").split(",") if x.strip()]
 ALERT_SEVERITY_THRESHOLD = os.getenv("ALERT_SEVERITY_THRESHOLD", "high")
 ALERT_COOLDOWN_MINUTES = int(os.getenv("ALERT_COOLDOWN_MINUTES", "15"))
@@ -316,27 +317,24 @@ logger = logging.getLogger("ner_shield")
 
 
 def send_sms(to: str, body: str) -> str:
-    """Sends via Fast2SMS if FAST2SMS_API_KEY is configured; otherwise returns
+    """Sends via ClickSend if credentials are configured; otherwise returns
     "simulated" so the alert pipeline stays fully testable without a live SMS account."""
-    if not FAST2SMS_API_KEY:
+    if not (CLICKSEND_USERNAME and CLICKSEND_API_KEY):
         return "simulated"
-    number = to.lstrip("+")
-    if number.startswith("91") and len(number) == 12:
-        number = number[2:]  # Fast2SMS expects bare 10-digit Indian numbers, no country code
     try:
         response = httpx.post(
-            "https://www.fast2sms.com/dev/bulkV2",
-            headers={"Authorization": FAST2SMS_API_KEY, "Content-Type": "application/json"},
-            json={"message": body, "route": "q", "numbers": number, "language": "unicode"},
+            "https://rest.clicksend.com/v3/sms/send",
+            auth=(CLICKSEND_USERNAME, CLICKSEND_API_KEY),
+            json={"messages": [{"source": "ner-shield", "body": body, "to": to}]},
             timeout=10,
         )
         data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-        if response.status_code < 300 and data.get("return") is True:
+        if response.status_code < 300 and data.get("response_code") == "SUCCESS":
             return "sent"
-        logger.error("Fast2SMS to %s failed: HTTP %s: %s", to, response.status_code, data or response.text)
+        logger.error("ClickSend to %s failed: HTTP %s: %s", to, response.status_code, data or response.text)
         return "failed"
     except (httpx.HTTPError, ValueError) as exc:
-        logger.error("Fast2SMS to %s raised an exception: %s", to, exc)
+        logger.error("ClickSend to %s raised an exception: %s", to, exc)
         return "failed"
 
 
