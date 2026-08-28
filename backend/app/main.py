@@ -31,11 +31,7 @@ Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 # an X-API-Key header on the write endpoints below before any real deployment.
 API_KEY = os.getenv("API_KEY")
 
-SMS_PROVIDER = os.getenv("SMS_PROVIDER", "fast2sms")  # "fast2sms" | "twilio"
 FAST2SMS_API_KEY = os.getenv("FAST2SMS_API_KEY")
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER")
 ALERT_SMS_RECIPIENTS = [x.strip() for x in os.getenv("ALERT_SMS_RECIPIENTS", "").split(",") if x.strip()]
 ALERT_SEVERITY_THRESHOLD = os.getenv("ALERT_SEVERITY_THRESHOLD", "high")
 ALERT_COOLDOWN_MINUTES = int(os.getenv("ALERT_COOLDOWN_MINUTES", "15"))
@@ -320,15 +316,8 @@ logger = logging.getLogger("ner_shield")
 
 
 def send_sms(to: str, body: str) -> str:
-    """Dispatches via whichever SMS_PROVIDER is configured; returns "simulated" if
-    that provider's credentials are missing, so the alert pipeline stays fully
-    testable without a live SMS account."""
-    if SMS_PROVIDER == "twilio":
-        return send_sms_twilio(to, body)
-    return send_sms_fast2sms(to, body)
-
-
-def send_sms_fast2sms(to: str, body: str) -> str:
+    """Sends via Fast2SMS if FAST2SMS_API_KEY is configured; otherwise returns
+    "simulated" so the alert pipeline stays fully testable without a live SMS account."""
     if not FAST2SMS_API_KEY:
         return "simulated"
     number = to.lstrip("+")
@@ -348,25 +337,6 @@ def send_sms_fast2sms(to: str, body: str) -> str:
         return "failed"
     except (httpx.HTTPError, ValueError) as exc:
         logger.error("Fast2SMS to %s raised an exception: %s", to, exc)
-        return "failed"
-
-
-def send_sms_twilio(to: str, body: str) -> str:
-    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER):
-        return "simulated"
-    try:
-        response = httpx.post(
-            f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json",
-            data={"To": to, "From": TWILIO_FROM_NUMBER, "Body": body},
-            auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
-            timeout=10,
-        )
-        if response.status_code >= 300:
-            logger.error("Twilio SMS to %s failed: HTTP %s: %s", to, response.status_code, response.text)
-            return "failed"
-        return "sent"
-    except httpx.HTTPError as exc:
-        logger.error("Twilio SMS to %s raised an exception: %s", to, exc)
         return "failed"
 
 
