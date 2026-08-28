@@ -6,7 +6,7 @@ import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-const apiBaseUrl = 'http://10.0.2.2:8000'; // Android emulator only — see README for other targets
+const apiBaseUrl = 'https://ner-shield-api.onrender.com';
 
 void main() => runApp(const NerShieldApp());
 
