@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import random
 import uuid
@@ -313,6 +314,9 @@ def localized_message(severity: str, district: str | None, detail: str) -> str:
 
 # --- SMS dispatch + alert pipeline ---------------------------------------------------------
 
+logger = logging.getLogger("ner_shield")
+
+
 def send_sms(to: str, body: str) -> str:
     """Sends via Twilio if credentials are configured; otherwise returns "simulated"
     so the alert pipeline is fully testable without a live SMS account."""
@@ -325,8 +329,12 @@ def send_sms(to: str, body: str) -> str:
             auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
             timeout=10,
         )
-        return "sent" if response.status_code < 300 else "failed"
-    except httpx.HTTPError:
+        if response.status_code >= 300:
+            logger.error("Twilio SMS to %s failed: HTTP %s: %s", to, response.status_code, response.text)
+            return "failed"
+        return "sent"
+    except httpx.HTTPError as exc:
+        logger.error("Twilio SMS to %s raised an exception: %s", to, exc)
         return "failed"
 
 
