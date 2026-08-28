@@ -23,7 +23,5 @@ mobile/.idea/
 
 # runtime files
 backend/uploads/
-backend/models/*.joblib
-!backend/models/.gitkeep
 ml/data/*.csv
 !ml/data/README.md
