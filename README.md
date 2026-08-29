@@ -107,14 +107,6 @@ Full interactive docs at `/docs`. Key endpoints:
 | `GET /api/v1/priorities` | Risk cells ranked by score × nearby infrastructure |
 | `GET /api/v1/alerts` | Alert history |
 
-## Known limitations
-
-- **Single pilot district** — only East Khasi Hills, Meghalaya has seeded data; architecture supports more, not yet populated.
-- **No true IMD-branded feed or satellite imagery** — live weather comes from Open-Meteo (real data, not IMD); NDVI is a static input field, not a live imagery pipeline.
-- **Alerts run in simulated mode by default** — the pipeline is fully real and automatic, but no phone numbers/Twilio account are wired in; add `ALERT_SMS_RECIPIENTS` + `TWILIO_*` to send real SMS.
-- **Uploaded media isn't durable on Render** — the free-tier filesystem is ephemeral; a redeploy clears `/data/uploads`. Needs object storage (S3/R2/B2) before relying on it.
-- **No auth/RBAC** — an optional flat `API_KEY` exists; no per-user roles or login system.
-- **No Alembic migrations** — schema is auto-created (`Base.metadata.create_all()`); fine for a pilot, not for production schema changes.
 
 ## Model notes
 
