@@ -798,9 +798,6 @@ def prediction(payload: RiskFeatures, db: Session = Depends(get_db)):
     }
 
 
-_last_forecast_error: list[str | None] = [None]  # temporary diagnostic, see fetch_rainfall_forecast
-
-
 def fetch_rainfall_forecast(latitude: float, longitude: float) -> list[float] | None:
     """Forecasted daily rainfall totals (today + next 7 days) from Open-Meteo (free,
     keyless). Used to project risk forward by feeding real forecast rainfall into the
@@ -817,11 +814,9 @@ def fetch_rainfall_forecast(latitude: float, longitude: float) -> list[float] | 
         response.raise_for_status()
         precip = response.json()["hourly"].get("precipitation", [])
         if len(precip) < 192:  # need 8 full days of hourly data
-            _last_forecast_error[0] = f"only got {len(precip)} hourly entries (need 192)"
             return None
         return [sum(precip[d * 24:(d + 1) * 24]) for d in range(8)]
-    except Exception as exc:  # noqa: BLE001 - temporary broad catch to diagnose a live failure
-        _last_forecast_error[0] = repr(exc)
+    except (httpx.HTTPError, KeyError, ValueError, IndexError, TypeError):
         return None
 
 
@@ -881,10 +876,7 @@ def outlook(district: str, db: Session = Depends(get_db)):
                 "bounded by that forecast's own accuracy at this range, not a guarantee."
             )
         else:
-            projection["weather_note"] = (
-                f"Could not fetch forecast weather for this district's location right now. "
-                f"[debug: {_last_forecast_error[0]}]"
-            )
+            projection["weather_note"] = "Could not fetch forecast weather for this district's location right now."
 
     rows = list(reversed(
         db.query(PredictionLog)
