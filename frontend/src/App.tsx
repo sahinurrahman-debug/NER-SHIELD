@@ -272,19 +272,6 @@ export default function App() {
                   )}
                 </div>
                 <p className="forecast-note">{outlook.note}</p>
-                <div className="outlook-horizons">
-                  <div className="outlook-horizon">
-                    <span className="outlook-horizon-label">In 3 days</span>
-                    <strong>{outlook.probability_3day !== null ? `${Math.round(outlook.probability_3day * 100)}%` : "—"}</strong>
-                    {outlook.severity_3day && <span className={`alert-status severity-badge ${outlook.severity_3day}`}>{outlook.severity_3day}</span>}
-                  </div>
-                  <div className="outlook-horizon">
-                    <span className="outlook-horizon-label">In 7 days</span>
-                    <strong>{outlook.probability_7day !== null ? `${Math.round(outlook.probability_7day * 100)}%` : "—"}</strong>
-                    {outlook.severity_7day && <span className={`alert-status severity-badge ${outlook.severity_7day}`}>{outlook.severity_7day}</span>}
-                  </div>
-                </div>
-                <p className="forecast-note">{outlook.weather_note}</p>
               </div>
             )}
             {!outlook && <p>Enter a district and click Load.</p>}

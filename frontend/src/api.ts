@@ -86,9 +86,6 @@ export async function getForecast(district: string) {
 export type Outlook = {
   district: string; probability: number | null; severity: string | null;
   trend_per_day?: number | null; days_to_critical: number | null; readings_used?: number; note: string;
-  probability_3day: number | null; severity_3day: string | null;
-  probability_7day: number | null; severity_7day: string | null;
-  weather_note: string;
 };
 
 export async function getOutlook(district: string) {
