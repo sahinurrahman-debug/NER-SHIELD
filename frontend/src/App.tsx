@@ -1,7 +1,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Feature as GeoJsonFeature } from "geojson";
-import { GeoJSON, MapContainer, TileLayer, useMap } from "react-leaflet";
+import { Circle, GeoJSON, MapContainer, Popup, TileLayer, useMap } from "react-leaflet";
 import { CircleMarker } from "leaflet";
 import type { Map as LeafletMap, PathOptions } from "leaflet";
 import {
@@ -14,6 +14,10 @@ const colours: Record<string, string> = {
 };
 const roadColours: Record<string, string> = {
   open: "#22c55e", restricted: "#eab308", partial_block: "#f97316", blocked: "#dc2626",
+};
+// Real-world radius (metres) for each severity's alert zone circle on the map.
+const ZONE_RADIUS_M: Record<string, number> = {
+  low: 300, moderate: 450, high: 650, critical: 900,
 };
 
 function style(feature?: GeoJsonFeature): PathOptions {
@@ -48,6 +52,24 @@ function MapController({ onReady }: { onReady: (map: LeafletMap) => void }) {
   const map = useMap();
   useEffect(() => onReady(map), [map, onReady]);
   return null;
+}
+
+// Resolves an alert down to one [lat, lon] point, regardless of which path triggered
+// it — a monitored cell (by cell_id), a field report (by its own coordinates), or a
+// prediction alert (falls back to its district's highest-scoring cell).
+function locateAlert(alert: Alert, cells: RiskFeature[], reports: Report[]): [number, number] | null {
+  if (alert.source_type === "monitor" && alert.source_id) {
+    const cell = cells.find((c) => c.properties.cell_id === alert.source_id);
+    const center = cell && geometryCenter(cell.geometry);
+    if (center) return center;
+  }
+  if (alert.source_type === "field_report" && alert.source_id) {
+    const report = reports.find((r) => r.id === Number(alert.source_id));
+    if (report) return [report.latitude, report.longitude];
+  }
+  const districtCells = cells.filter((c) => c.properties.district === alert.district);
+  const best = districtCells.sort((a, b) => b.properties.risk_score - a.properties.risk_score)[0];
+  return best ? geometryCenter(best.geometry) : null;
 }
 
 export default function App() {
@@ -88,23 +110,8 @@ export default function App() {
 
   function flyToAlert(alert: Alert) {
     const map = mapRef.current;
-    if (!map) return;
-
-    if (alert.source_type === "monitor" && alert.source_id) {
-      const cell = cells.find((c) => c.properties.cell_id === alert.source_id);
-      const center = cell && geometryCenter(cell.geometry);
-      if (center) { map.flyTo(center, 15); return; }
-    }
-    if (alert.source_type === "field_report" && alert.source_id) {
-      const report = reports.find((r) => r.id === Number(alert.source_id));
-      if (report) { map.flyTo([report.latitude, report.longitude], 15); return; }
-    }
-    // Fallback: prediction alerts (and anything else) only carry a district — jump to
-    // that district's highest-scoring risk cell instead of an exact point.
-    const districtCells = cells.filter((c) => c.properties.district === alert.district);
-    const best = districtCells.sort((a, b) => b.properties.risk_score - a.properties.risk_score)[0];
-    const center = best && geometryCenter(best.geometry);
-    if (center) map.flyTo(center, 15);
+    const center = locateAlert(alert, cells, reports);
+    if (map && center) map.flyTo(center, 15);
   }
 
   const geoJsonData: GeoJSON.FeatureCollection = {
@@ -117,41 +124,18 @@ export default function App() {
   };
   return (
     <main>
-      <header><div><h1>NER-SHIELD</h1><p>NER landslide decision-support dashboard</p></div><span className="badge">DEMO</span></header>
+      <header>
+        <div><h1>NER-SHIELD</h1><p>NER landslide decision-support dashboard</p></div>
+        <div className="header-right">
+          <span className="live-dot" /><span className="live-label">LIVE</span>
+          <span className="badge">DEMO</span>
+        </div>
+      </header>
       {notice && <p className="notice">{notice}</p>}
       {error && <p className="error">{error}. Is the API running on port 8000?</p>}
-      <section className="cards">
-        {["low", "moderate", "high", "critical"].map((level) => (
-          <article key={level} className={`card ${level}`}><span>{level}</span><strong>{counts[level] ?? 0}</strong></article>
-        ))}
-      </section>
-      <section className="cards">
-        {["open", "restricted", "partial_block", "blocked"].map((status) => (
-          <article key={status} className={`card road-${status}`}>
-            <span>{status.replace("_", " ")}</span><strong>{roadCounts[status] ?? 0}</strong>
-          </article>
-        ))}
-      </section>
-      <section className="alerts-panel">
-        <h2>Recent alerts</h2>
-        {alerts.length === 0 && <p>No alerts triggered yet.</p>}
-        {alerts.map((alert) => (
-          <article
-            className={`alert-row ${alert.severity} clickable`}
-            key={alert.id}
-            onClick={() => flyToAlert(alert)}
-            title="Click to jump to this location on the map"
-          >
-            <span className={`alert-status ${alert.status}`}>{alert.status.replace("_", " ")}</span>
-            <div>
-              <b>{alert.severity.toUpperCase()} · {alert.district ?? "Unknown location"}</b>
-              <p>{alert.message}</p>
-            </div>
-          </article>
-        ))}
-      </section>
-      <section className="layout">
-        <div className="map-wrap">
+
+      <section className="hero">
+        <div className="map-wrap hero-map">
           <MapContainer center={[25.58, 91.885]} zoom={13} className="map">
             <MapController onReady={(map) => { mapRef.current = map; }} />
             <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
@@ -176,18 +160,74 @@ export default function App() {
               layer.bindPopup(`<b>${p.name}</b><br/>${p.kind}${p.status ? ` · ${p.status}` : ""}`);
             }}
           />
+          {alerts.map((alert) => {
+            const center = locateAlert(alert, cells, reports);
+            if (!center) return null;
+            return (
+              <Circle
+                key={`zone-${alert.id}`}
+                center={center}
+                radius={ZONE_RADIUS_M[alert.severity] ?? 300}
+                pathOptions={{
+                  color: colours[alert.severity] ?? "#64748b", weight: 2, dashArray: "8 6",
+                  fillOpacity: 0.1, fillColor: colours[alert.severity] ?? "#64748b",
+                }}
+                eventHandlers={{ click: () => flyToAlert(alert) }}
+              >
+                <Popup>
+                  <b>{alert.severity.toUpperCase()} ALERT ZONE</b><br />
+                  {alert.district ?? "Unknown location"}<br />
+                  Status: {alert.status.replace("_", " ")}
+                </Popup>
+              </Circle>
+            );
+          })}
           </MapContainer>
         </div>
-        <aside><h2>Recent field reports</h2>{reports.length === 0 && <p>No reports yet.</p>}
-          {reports.map((report) => <article className="report" key={report.id}>
-            <b>{report.severity.toUpperCase()} · {report.report_type.replace("_", " ")}</b>
-            <p>{report.description}</p><small>{report.district ?? "Unknown district"} · {report.road_status ?? "road status not set"}</small>
-          </article>)}
+        <aside className="alerts-panel hero-alerts">
+          <h2 className="panel-title"><span className="dot" />Recent alerts</h2>
+          {alerts.length === 0 && <p>No alerts triggered yet.</p>}
+          {alerts.map((alert) => (
+            <article
+              className={`alert-row ${alert.severity} clickable`}
+              key={alert.id}
+              onClick={() => flyToAlert(alert)}
+              title="Click to jump to this location on the map"
+            >
+              <span className={`alert-status ${alert.status}`}>{alert.status.replace("_", " ")}</span>
+              <div>
+                <b>{alert.severity.toUpperCase()} · {alert.district ?? "Unknown location"}</b>
+                <p>{alert.message}</p>
+              </div>
+            </article>
+          ))}
         </aside>
       </section>
+
+      <section className="stat-strip">
+        <div className="stat-group">
+          <h3 className="stat-group-title">Risk severity</h3>
+          <div className="cards">
+            {["low", "moderate", "high", "critical"].map((level) => (
+              <article key={level} className={`card ${level}`}><span>{level}</span><strong>{counts[level] ?? 0}</strong></article>
+            ))}
+          </div>
+        </div>
+        <div className="stat-group">
+          <h3 className="stat-group-title">Road connectivity</h3>
+          <div className="cards">
+            {["open", "restricted", "partial_block", "blocked"].map((status) => (
+              <article key={status} className={`card road-${status}`}>
+                <span>{status.replace("_", " ")}</span><strong>{roadCounts[status] ?? 0}</strong>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
       <section className="layout">
         <div className="table-wrap">
-          <h2>Emergency response prioritisation</h2>
+          <h2 className="panel-title"><span className="dot" />Emergency response prioritisation</h2>
           <table className="priority-table">
             <thead><tr><th>District</th><th>Severity</th><th>Risk score</th><th>Nearby infra</th><th>Priority score</th></tr></thead>
             <tbody>
@@ -201,20 +241,30 @@ export default function App() {
             </tbody>
           </table>
         </div>
-        <aside>
-          <h2>Weather-linked risk forecast</h2>
-          <div className="forecast-controls">
-            <input value={forecastDistrict} onChange={(e) => setForecastDistrict(e.target.value)} placeholder="District name" />
-            <button onClick={loadForecast}>Load</button>
+        <aside className="secondary-aside">
+          <div className="sub-panel">
+            <h2 className="panel-title"><span className="dot" />Recent field reports</h2>
+            {reports.length === 0 && <p>No reports yet.</p>}
+            {reports.map((report) => <article className="report" key={report.id}>
+              <b>{report.severity.toUpperCase()} · {report.report_type.replace("_", " ")}</b>
+              <p>{report.description}</p><small>{report.district ?? "Unknown district"} · {report.road_status ?? "road status not set"}</small>
+            </article>)}
           </div>
-          {forecastNote && <p className="forecast-note">{forecastNote}</p>}
-          {forecastPoints.map((point, i) => (
-            <div className={`forecast-point ${point.severity}`} key={i}>
-              <b>{point.risk_score}%</b> · {point.severity} · {point.rain_24h_mm.toFixed(0)}mm rain · {point.source}
-              <small> {new Date(point.created_at).toLocaleString()}</small>
+          <div className="sub-panel">
+            <h2 className="panel-title"><span className="dot" />Weather-linked risk forecast</h2>
+            <div className="forecast-controls">
+              <input value={forecastDistrict} onChange={(e) => setForecastDistrict(e.target.value)} placeholder="District name" />
+              <button onClick={loadForecast}>Load</button>
             </div>
-          ))}
-          {forecastPoints.length === 0 && <p>No readings logged for this district yet — submit a prediction with a district set first.</p>}
+            {forecastNote && <p className="forecast-note">{forecastNote}</p>}
+            {forecastPoints.map((point, i) => (
+              <div className={`forecast-point ${point.severity}`} key={i}>
+                <b>{point.risk_score}%</b> · {point.severity} · {point.rain_24h_mm.toFixed(0)}mm rain · {point.source}
+                <small> {new Date(point.created_at).toLocaleString()}</small>
+              </div>
+            ))}
+            {forecastPoints.length === 0 && <p>No readings logged for this district yet — submit a prediction with a district set first.</p>}
+          </div>
         </aside>
       </section>
     </main>
