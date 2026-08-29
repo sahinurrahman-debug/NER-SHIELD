@@ -38,6 +38,9 @@ ALERT_SEVERITY_THRESHOLD = os.getenv("ALERT_SEVERITY_THRESHOLD", "high")
 ALERT_COOLDOWN_MINUTES = int(os.getenv("ALERT_COOLDOWN_MINUTES", "15"))
 ALERT_LANGUAGES = [x.strip() for x in os.getenv("ALERT_LANGUAGES", "en,hi,as,bn").split(",") if x.strip()]
 SEVERITY_ORDER = ["low", "moderate", "high", "critical"]
+# Representative risk_score for a severity band, used when a field report (which carries
+# no raw sensor readings) needs to place/update a risk cell on the map.
+SEVERITY_MIDPOINT_SCORE = {"low": 15.0, "moderate": 40.0, "high": 65.0, "critical": 90.0}
 
 # Real-time monitoring loop (see run_monitor_tick). Pulls live rainfall/soil-moisture from
 # Open-Meteo (free, keyless) per risk cell; falls back to a random walk if that call fails
@@ -703,6 +706,15 @@ def create_report(payload: ReportCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(report)
     if report.severity in ("high", "critical"):
+        # A verified-severity citizen/field report is real ground truth — reflect it on the
+        # map and severity counts too, not just the alerts panel. Uses a representative score
+        # for the severity band since a report doesn't carry raw sensor readings; this cell's
+        # cell_id starts with "live-" so the monitor loop leaves it alone (see run_monitor_tick).
+        upsert_risk_cell(
+            db, latitude=report.latitude, longitude=report.longitude, district=report.district,
+            slope_deg=0.0, rain_24h_mm=0.0, soil_moisture_pct=0.0, historical_density=0.3,
+            risk_score=SEVERITY_MIDPOINT_SCORE[report.severity], severity=report.severity,
+        )
         raise_alert(
             db, source_type="field_report", source_id=str(report.id), district=report.district,
             severity=report.severity,
