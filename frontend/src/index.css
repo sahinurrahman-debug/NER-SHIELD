@@ -72,6 +72,21 @@ header p { color: #94a3b8; }
 .forecast-point small { display: block; color: #64748b; }
 .forecast-point.critical b { color: #f87171; } .forecast-point.high b { color: #fb923c; }
 
+/* --- Risk probability & outlook panel --- */
+.outlook-panel { max-height: none; }
+.outlook-body { margin-top: 6px; }
+.outlook-main { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.outlook-probability { display: flex; flex-direction: column; }
+.outlook-probability strong { font-size: 2.6rem; line-height: 1.1; background: linear-gradient(135deg, #fbbf24, #f97316); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.outlook-probability span { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #94a3b8; }
+.severity-badge { text-transform: uppercase; }
+.severity-badge.low { background: #14532d; color: #86efac; }
+.severity-badge.moderate { background: #713f12; color: #fde68a; }
+.severity-badge.high { background: #7c2d12; color: #fdba74; }
+.severity-badge.critical { background: #7f1d1d; color: #fca5a5; }
+.outlook-days { font-size: 0.95rem; padding: 10px 12px; background: #0f172a; border-radius: 8px; margin-bottom: 8px; }
+.outlook-days .critical-text { color: #f87171; font-weight: 700; }
+
 @media (max-width: 900px) {
   .hero { grid-template-columns: 1fr; } .hero-map .map { height: 420px; } .hero-alerts { max-height: 320px; }
   .stat-strip { grid-template-columns: 1fr; } .cards, .layout { grid-template-columns: 1fr; }

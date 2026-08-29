@@ -5,8 +5,8 @@ import { Circle, GeoJSON, MapContainer, Popup, TileLayer, useMap } from "react-l
 import { CircleMarker } from "leaflet";
 import type { Map as LeafletMap, PathOptions } from "leaflet";
 import {
-  getAlerts, getForecast, getInfrastructure, getPriorities, getReports, getRiskCells, getRoadStatus, getSummary,
-  type Alert, type Feature as RiskFeature, type ForecastPoint, type InfraFeature, type Priority, type Report,
+  getAlerts, getForecast, getInfrastructure, getOutlook, getPriorities, getReports, getRiskCells, getRoadStatus, getSummary,
+  type Alert, type Feature as RiskFeature, type ForecastPoint, type InfraFeature, type Outlook, type Priority, type Report,
 } from "./api";
 
 const colours: Record<string, string> = {
@@ -85,6 +85,7 @@ export default function App() {
   const [forecastDistrict, setForecastDistrict] = useState("East Khasi Hills");
   const [forecastPoints, setForecastPoints] = useState<ForecastPoint[]>([]);
   const [forecastNote, setForecastNote] = useState("");
+  const [outlook, setOutlook] = useState<Outlook | null>(null);
   const mapRef = useRef<LeafletMap | null>(null);
 
   useEffect(() => {
@@ -100,11 +101,15 @@ export default function App() {
         setPriorities(prioritiesResponse);
       })
       .catch((err: Error) => setError(err.message));
+    getOutlook("East Khasi Hills").then(setOutlook).catch(() => {});
   }, []);
 
   function loadForecast() {
     getForecast(forecastDistrict)
       .then((data) => { setForecastPoints(data.points); setForecastNote(data.note); })
+      .catch((err: Error) => setError(err.message));
+    getOutlook(forecastDistrict)
+      .then(setOutlook)
       .catch((err: Error) => setError(err.message));
   }
 
@@ -242,20 +247,37 @@ export default function App() {
           </table>
         </div>
         <aside className="secondary-aside">
-          <div className="sub-panel">
-            <h2 className="panel-title"><span className="dot" />Recent field reports</h2>
-            {reports.length === 0 && <p>No reports yet.</p>}
-            {reports.map((report) => <article className="report" key={report.id}>
-              <b>{report.severity.toUpperCase()} · {report.report_type.replace("_", " ")}</b>
-              <p>{report.description}</p><small>{report.district ?? "Unknown district"} · {report.road_status ?? "road status not set"}</small>
-            </article>)}
-          </div>
-          <div className="sub-panel">
-            <h2 className="panel-title"><span className="dot" />Weather-linked risk forecast</h2>
+          <div className="sub-panel outlook-panel">
+            <h2 className="panel-title"><span className="dot" />Risk probability &amp; outlook</h2>
             <div className="forecast-controls">
               <input value={forecastDistrict} onChange={(e) => setForecastDistrict(e.target.value)} placeholder="District name" />
               <button onClick={loadForecast}>Load</button>
             </div>
+            {outlook && (
+              <div className="outlook-body">
+                <div className="outlook-main">
+                  <div className="outlook-probability">
+                    <strong>{outlook.probability !== null ? `${Math.round(outlook.probability * 100)}%` : "—"}</strong>
+                    <span>predicted probability</span>
+                  </div>
+                  {outlook.severity && (
+                    <span className={`alert-status severity-badge ${outlook.severity}`}>{outlook.severity}</span>
+                  )}
+                </div>
+                <div className="outlook-days">
+                  {outlook.days_to_critical === null && <span>No clear worsening trend toward critical yet.</span>}
+                  {outlook.days_to_critical === 0 && <span className="critical-text">Already at or above critical.</span>}
+                  {outlook.days_to_critical !== null && outlook.days_to_critical > 0 && (
+                    <span>Estimated <b>{outlook.days_to_critical}</b> day(s) to critical at current trend.</span>
+                  )}
+                </div>
+                <p className="forecast-note">{outlook.note}</p>
+              </div>
+            )}
+            {!outlook && <p>Enter a district and click Load.</p>}
+          </div>
+          <div className="sub-panel">
+            <h2 className="panel-title"><span className="dot" />Weather-linked risk forecast</h2>
             {forecastNote && <p className="forecast-note">{forecastNote}</p>}
             {forecastPoints.map((point, i) => (
               <div className={`forecast-point ${point.severity}`} key={i}>
@@ -264,6 +286,14 @@ export default function App() {
               </div>
             ))}
             {forecastPoints.length === 0 && <p>No readings logged for this district yet — submit a prediction with a district set first.</p>}
+          </div>
+          <div className="sub-panel">
+            <h2 className="panel-title"><span className="dot" />Recent field reports</h2>
+            {reports.length === 0 && <p>No reports yet.</p>}
+            {reports.map((report) => <article className="report" key={report.id}>
+              <b>{report.severity.toUpperCase()} · {report.report_type.replace("_", " ")}</b>
+              <p>{report.description}</p><small>{report.district ?? "Unknown district"} · {report.road_status ?? "road status not set"}</small>
+            </article>)}
           </div>
         </aside>
       </section>

@@ -82,3 +82,14 @@ export async function getForecast(district: string) {
   if (!response.ok) throw new Error("Could not load forecast");
   return response.json() as Promise<{ district: string; note: string; points: ForecastPoint[] }>;
 }
+
+export type Outlook = {
+  district: string; probability: number | null; severity: string | null;
+  trend_per_day?: number | null; days_to_critical: number | null; readings_used?: number; note: string;
+};
+
+export async function getOutlook(district: string) {
+  const response = await fetch(`${API}/api/v1/outlook?district=${encodeURIComponent(district)}`);
+  if (!response.ok) throw new Error("Could not load outlook");
+  return response.json() as Promise<Outlook>;
+}
