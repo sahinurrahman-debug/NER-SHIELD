@@ -9,6 +9,7 @@ header { display: flex; justify-content: space-between; align-items: center; } h
 .layout { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }.map-wrap, aside { background: #1e293b; border-radius: 10px; overflow: hidden; }.map { height: 560px; } aside { padding: 16px; max-height: 560px; overflow-y: auto; }.report { border-bottom: 1px solid #334155; padding: 12px 0; }.report p { margin: 6px 0; }
 .alerts-panel { background: #1e293b; border-radius: 10px; padding: 16px; margin-bottom: 16px; max-height: 260px; overflow-y: auto; }
 .alert-row { display: flex; gap: 12px; align-items: flex-start; border-left: 4px solid #64748b; border-radius: 6px; background: #0f172a; padding: 10px 12px; margin-top: 10px; }
+.alert-row.clickable { cursor: pointer; } .alert-row.clickable:hover { background: #16213a; }
 .alert-row b { display: block; margin-bottom: 4px; } .alert-row p { margin: 0; color: #cbd5e1; }
 .alert-status { flex-shrink: 0; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; background: #334155; }
 .alert-status.sent { background: #14532d; color: #86efac; }

@@ -1,9 +1,9 @@
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Feature as GeoJsonFeature } from "geojson";
-import { GeoJSON, MapContainer, TileLayer } from "react-leaflet";
+import { GeoJSON, MapContainer, TileLayer, useMap } from "react-leaflet";
 import { CircleMarker } from "leaflet";
-import type { PathOptions } from "leaflet";
+import type { Map as LeafletMap, PathOptions } from "leaflet";
 import {
   getAlerts, getForecast, getInfrastructure, getPriorities, getReports, getRiskCells, getRoadStatus, getSummary,
   type Alert, type Feature as RiskFeature, type ForecastPoint, type InfraFeature, type Priority, type Report,
@@ -26,6 +26,30 @@ function infraStyle(feature?: GeoJsonFeature): PathOptions {
   return { color: roadColours[status] ?? "#38bdf8", weight: 4, dashArray: "6 4" };
 }
 
+// Averages a GeoJSON geometry's coordinates down to one [lat, lon] point, so any
+// risk-cell polygon or infrastructure line/point can be flown to on the map.
+function geometryCenter(geometry: GeoJSON.Geometry): [number, number] | null {
+  const flat: [number, number][] = [];
+  const collect = (coords: unknown): void => {
+    if (Array.isArray(coords) && typeof coords[0] === "number") {
+      flat.push([coords[1] as number, coords[0] as number]); // GeoJSON is [lon, lat]
+    } else if (Array.isArray(coords)) {
+      coords.forEach(collect);
+    }
+  };
+  collect((geometry as { coordinates?: unknown }).coordinates);
+  if (flat.length === 0) return null;
+  const lat = flat.reduce((sum, p) => sum + p[0], 0) / flat.length;
+  const lon = flat.reduce((sum, p) => sum + p[1], 0) / flat.length;
+  return [lat, lon];
+}
+
+function MapController({ onReady }: { onReady: (map: LeafletMap) => void }) {
+  const map = useMap();
+  useEffect(() => onReady(map), [map, onReady]);
+  return null;
+}
+
 export default function App() {
   const [cells, setCells] = useState<RiskFeature[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
@@ -39,6 +63,7 @@ export default function App() {
   const [forecastDistrict, setForecastDistrict] = useState("East Khasi Hills");
   const [forecastPoints, setForecastPoints] = useState<ForecastPoint[]>([]);
   const [forecastNote, setForecastNote] = useState("");
+  const mapRef = useRef<LeafletMap | null>(null);
 
   useEffect(() => {
     Promise.all([getSummary(), getRiskCells(), getReports(), getAlerts(), getInfrastructure(), getRoadStatus(), getPriorities()])
@@ -59,6 +84,27 @@ export default function App() {
     getForecast(forecastDistrict)
       .then((data) => { setForecastPoints(data.points); setForecastNote(data.note); })
       .catch((err: Error) => setError(err.message));
+  }
+
+  function flyToAlert(alert: Alert) {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (alert.source_type === "monitor" && alert.source_id) {
+      const cell = cells.find((c) => c.properties.cell_id === alert.source_id);
+      const center = cell && geometryCenter(cell.geometry);
+      if (center) { map.flyTo(center, 15); return; }
+    }
+    if (alert.source_type === "field_report" && alert.source_id) {
+      const report = reports.find((r) => r.id === Number(alert.source_id));
+      if (report) { map.flyTo([report.latitude, report.longitude], 15); return; }
+    }
+    // Fallback: prediction alerts (and anything else) only carry a district — jump to
+    // that district's highest-scoring risk cell instead of an exact point.
+    const districtCells = cells.filter((c) => c.properties.district === alert.district);
+    const best = districtCells.sort((a, b) => b.properties.risk_score - a.properties.risk_score)[0];
+    const center = best && geometryCenter(best.geometry);
+    if (center) map.flyTo(center, 15);
   }
 
   const geoJsonData: GeoJSON.FeatureCollection = {
@@ -90,7 +136,12 @@ export default function App() {
         <h2>Recent alerts</h2>
         {alerts.length === 0 && <p>No alerts triggered yet.</p>}
         {alerts.map((alert) => (
-          <article className={`alert-row ${alert.severity}`} key={alert.id}>
+          <article
+            className={`alert-row ${alert.severity} clickable`}
+            key={alert.id}
+            onClick={() => flyToAlert(alert)}
+            title="Click to jump to this location on the map"
+          >
             <span className={`alert-status ${alert.status}`}>{alert.status.replace("_", " ")}</span>
             <div>
               <b>{alert.severity.toUpperCase()} · {alert.district ?? "Unknown location"}</b>
@@ -102,6 +153,7 @@ export default function App() {
       <section className="layout">
         <div className="map-wrap">
           <MapContainer center={[25.58, 91.885]} zoom={13} className="map">
+            <MapController onReady={(map) => { mapRef.current = map; }} />
             <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             <GeoJSON data={geoJsonData} style={style}
             onEachFeature={(feature, layer) => {
