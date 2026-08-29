@@ -165,25 +165,24 @@ export default function App() {
               layer.bindPopup(`<b>${p.name}</b><br/>${p.kind}${p.status ? ` · ${p.status}` : ""}`);
             }}
           />
-          {cells.map((cell) => {
-            const center = geometryCenter(cell.geometry);
+          {alerts.map((alert) => {
+            const center = locateAlert(alert, cells, reports);
             if (!center) return null;
-            const p = cell.properties;
             return (
               <Circle
-                key={`zone-${p.cell_id}`}
+                key={`zone-${alert.id}`}
                 center={center}
-                radius={ZONE_RADIUS_M[p.severity] ?? 300}
+                radius={ZONE_RADIUS_M[alert.severity] ?? 300}
                 pathOptions={{
-                  color: colours[p.severity] ?? "#64748b", weight: 2, dashArray: "8 6",
-                  fillOpacity: 0.12, fillColor: colours[p.severity] ?? "#64748b",
+                  color: colours[alert.severity] ?? "#64748b", weight: 2, dashArray: "8 6",
+                  fillOpacity: 0.1, fillColor: colours[alert.severity] ?? "#64748b",
                 }}
-                eventHandlers={{ click: () => mapRef.current?.flyTo(center, 15) }}
+                eventHandlers={{ click: () => flyToAlert(alert) }}
               >
                 <Popup>
-                  <b>{p.severity.toUpperCase()} RISK ZONE</b><br />
-                  {p.district}<br />
-                  Score: {p.risk_score}
+                  <b>{alert.severity.toUpperCase()} ALERT ZONE</b><br />
+                  {alert.district ?? "Unknown location"}<br />
+                  Status: {alert.status.replace("_", " ")}
                 </Popup>
               </Circle>
             );
