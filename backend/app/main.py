@@ -143,40 +143,45 @@ class PredictionLog(Base):
 
 
 class RiskFeatures(BaseModel):
-    Rainfall_mm: float = Field(ge=0, le=500)
-    Slope_Angle: float = Field(ge=0, le=90)
-    Soil_Saturation: float = Field(ge=0, le=1)
-    Vegetation_Cover: float = Field(ge=0, le=1)
-    Rainfall_3Day: float = Field(ge=0, le=1000)
-    Rainfall_7Day: float = Field(ge=0, le=1500)
-    Aspect: float = Field(ge=0, le=360)
-    Elevation_m: float = Field(ge=0, le=4000)
-    NDVI_Index: float = Field(ge=-1, le=1)
-    Land_Use_Urban: Literal[0, 1]
-    Land_Use_Forest: Literal[0, 1]
-    Land_Use_Agriculture: Literal[0, 1]
-    Earthquake_Activity: float = Field(ge=0, le=10)
-    Proximity_to_Water: float = Field(ge=0, le=1)
-    Distance_to_Road_m: float = Field(ge=0, le=2000)
-    Temperature_C: float = Field(ge=-10, le=50)
-    Humidity_percent: float = Field(ge=0, le=100)
-    Soil_pH: float = Field(ge=0, le=14)
-    Clay_Content: float = Field(ge=0, le=100)
-    Sand_Content: float = Field(ge=0, le=100)
-    Silt_Content: float = Field(ge=0, le=100)
-    Soil_Erosion_Rate: float = Field(ge=0, le=100)
-    Historical_Landslide_Count: float = Field(ge=0, le=20)
-    Soil_Type_Gravel: Literal[0, 1]
-    Soil_Type_Sand: Literal[0, 1]
-    Soil_Type_Silt: Literal[0, 1]
-    Soil_Type_Clay: Literal[0, 1]
-    Pore_Water_Pressure_kPa: float = Field(ge=0, le=300)
-    Soil_Moisture_Content: float = Field(ge=0, le=1)
-    Microseismic_Activity: float = Field(ge=0, le=1)
-    Acoustic_Emission_dB: float = Field(ge=0, le=150)
-    Soil_Strain: float = Field(ge=0, le=1)
-    Soil_Temperature_C: float = Field(ge=-10, le=50)
-    TDR_Reflection_Index: float = Field(ge=0, le=3)
+    """All 34 sensor readings are optional — a real field station may only have a rain
+    gauge, not full soil chemistry sensors. Anything omitted is imputed: the trained
+    model uses its built-in median imputer (np.nan in predict()); the rule-based
+    fallback and map/forecast writes use NEUTRAL_DEFAULTS. See predict() and
+    fallback_probability() for how each path actually handles a missing value."""
+    Rainfall_mm: float | None = Field(default=None, ge=0, le=500)
+    Slope_Angle: float | None = Field(default=None, ge=0, le=90)
+    Soil_Saturation: float | None = Field(default=None, ge=0, le=1)
+    Vegetation_Cover: float | None = Field(default=None, ge=0, le=1)
+    Rainfall_3Day: float | None = Field(default=None, ge=0, le=1000)
+    Rainfall_7Day: float | None = Field(default=None, ge=0, le=1500)
+    Aspect: float | None = Field(default=None, ge=0, le=360)
+    Elevation_m: float | None = Field(default=None, ge=0, le=4000)
+    NDVI_Index: float | None = Field(default=None, ge=-1, le=1)
+    Land_Use_Urban: Literal[0, 1] | None = None
+    Land_Use_Forest: Literal[0, 1] | None = None
+    Land_Use_Agriculture: Literal[0, 1] | None = None
+    Earthquake_Activity: float | None = Field(default=None, ge=0, le=10)
+    Proximity_to_Water: float | None = Field(default=None, ge=0, le=1)
+    Distance_to_Road_m: float | None = Field(default=None, ge=0, le=2000)
+    Temperature_C: float | None = Field(default=None, ge=-10, le=50)
+    Humidity_percent: float | None = Field(default=None, ge=0, le=100)
+    Soil_pH: float | None = Field(default=None, ge=0, le=14)
+    Clay_Content: float | None = Field(default=None, ge=0, le=100)
+    Sand_Content: float | None = Field(default=None, ge=0, le=100)
+    Silt_Content: float | None = Field(default=None, ge=0, le=100)
+    Soil_Erosion_Rate: float | None = Field(default=None, ge=0, le=100)
+    Historical_Landslide_Count: float | None = Field(default=None, ge=0, le=20)
+    Soil_Type_Gravel: Literal[0, 1] | None = None
+    Soil_Type_Sand: Literal[0, 1] | None = None
+    Soil_Type_Silt: Literal[0, 1] | None = None
+    Soil_Type_Clay: Literal[0, 1] | None = None
+    Pore_Water_Pressure_kPa: float | None = Field(default=None, ge=0, le=300)
+    Soil_Moisture_Content: float | None = Field(default=None, ge=0, le=1)
+    Microseismic_Activity: float | None = Field(default=None, ge=0, le=1)
+    Acoustic_Emission_dB: float | None = Field(default=None, ge=0, le=150)
+    Soil_Strain: float | None = Field(default=None, ge=0, le=1)
+    Soil_Temperature_C: float | None = Field(default=None, ge=-10, le=50)
+    TDR_Reflection_Index: float | None = Field(default=None, ge=0, le=3)
     # Labels only, below — not model features, never passed into predict().
     district: str | None = None
     latitude: float | None = Field(default=None, ge=-90, le=90)
@@ -239,41 +244,65 @@ def severity_for(score: float) -> str:
     return "low"
 
 
+# Training-data-representative medians, used only when a field is omitted from a request —
+# lets the rule-based fallback and map/forecast writes still produce a sensible number from
+# a partial reading (e.g. rainfall only) instead of crashing on a missing value.
+NEUTRAL_DEFAULTS = {
+    "Rainfall_mm": 150.0, "Slope_Angle": 42.0, "Soil_Saturation": 0.55,
+    "Vegetation_Cover": 0.5, "Rainfall_3Day": 300.0, "Historical_Landslide_Count": 2.0,
+    "Soil_Moisture_Content": 0.3,
+}
+
+
+def _or_default(value: float | None, field: str) -> float:
+    return value if value is not None else NEUTRAL_DEFAULTS[field]
+
+
 def fallback_probability(p: RiskFeatures) -> float:
     """Transparent demo score built from the 4 features that actually drive risk
     in the training data (Rainfall_mm, Slope_Angle, Soil_Saturation, Vegetation_Cover);
-    it is not a trained or authoritative forecast."""
+    it is not a trained or authoritative forecast. Any omitted field falls back to a
+    training-representative default rather than failing the request."""
     score = (
-        min(p.Soil_Saturation, 1) * 0.30
-        + min(p.Rainfall_mm / 300, 1) * 0.25
-        + min(p.Slope_Angle / 80, 1) * 0.20
-        + (1 - min(p.Vegetation_Cover, 1)) * 0.15
-        + min(p.Rainfall_3Day / 600, 1) * 0.05
-        + min(p.Historical_Landslide_Count / 6, 1) * 0.05
+        min(_or_default(p.Soil_Saturation, "Soil_Saturation"), 1) * 0.30
+        + min(_or_default(p.Rainfall_mm, "Rainfall_mm") / 300, 1) * 0.25
+        + min(_or_default(p.Slope_Angle, "Slope_Angle") / 80, 1) * 0.20
+        + (1 - min(_or_default(p.Vegetation_Cover, "Vegetation_Cover"), 1)) * 0.15
+        + min(_or_default(p.Rainfall_3Day, "Rainfall_3Day") / 600, 1) * 0.05
+        + min(_or_default(p.Historical_Landslide_Count, "Historical_Landslide_Count") / 6, 1) * 0.05
     )
     return float(np.clip(score, 0, 1))
 
 
 def contributing_factors(p: RiskFeatures) -> list[str]:
     factors: list[str] = []
-    if p.Soil_Saturation >= 0.7:
+    if p.Soil_Saturation is not None and p.Soil_Saturation >= 0.7:
         factors.append("high soil saturation")
-    if p.Rainfall_mm >= 150:
+    if p.Rainfall_mm is not None and p.Rainfall_mm >= 150:
         factors.append("heavy recent rainfall")
-    if p.Rainfall_3Day >= 300:
+    if p.Rainfall_3Day is not None and p.Rainfall_3Day >= 300:
         factors.append("prolonged 3-day rainfall")
-    if p.Slope_Angle >= 45:
+    if p.Slope_Angle is not None and p.Slope_Angle >= 45:
         factors.append("steep slope")
-    if p.Vegetation_Cover <= 0.3:
+    if p.Vegetation_Cover is not None and p.Vegetation_Cover <= 0.3:
         factors.append("sparse vegetation cover")
-    if p.Historical_Landslide_Count >= 2:
+    if p.Historical_Landslide_Count is not None and p.Historical_Landslide_Count >= 2:
         factors.append("prior landslide history in area")
     return factors or ["no dominant trigger detected"]
 
 
+def missing_features(p: RiskFeatures) -> list[str]:
+    return [feature for feature in FEATURES if getattr(p, feature) is None]
+
+
 def predict(p: RiskFeatures) -> tuple[float, str]:
     if loaded_model is not None:
-        row = np.array([[getattr(p, feature) for feature in FEATURES]])
+        # NaN for anything omitted — the trained pipeline's own SimpleImputer (median,
+        # learned at training time) fills it in, rather than requiring all 34 readings.
+        row = np.array(
+            [[getattr(p, feature) if getattr(p, feature) is not None else np.nan for feature in FEATURES]],
+            dtype=float,
+        )
         return float(loaded_model.predict_proba(row)[0][1]), "ml_model"
     return fallback_probability(p), "rule_based_fallback"
 
@@ -737,9 +766,10 @@ def prediction(payload: RiskFeatures, db: Session = Depends(get_db)):
     if payload.latitude is not None and payload.longitude is not None:
         risk_cell_id = upsert_risk_cell(
             db, latitude=payload.latitude, longitude=payload.longitude, district=payload.district,
-            slope_deg=payload.Slope_Angle, rain_24h_mm=payload.Rainfall_mm,
-            soil_moisture_pct=payload.Soil_Moisture_Content * 100,
-            historical_density=min(payload.Historical_Landslide_Count / 6, 1),
+            slope_deg=_or_default(payload.Slope_Angle, "Slope_Angle"),
+            rain_24h_mm=_or_default(payload.Rainfall_mm, "Rainfall_mm"),
+            soil_moisture_pct=_or_default(payload.Soil_Moisture_Content, "Soil_Moisture_Content") * 100,
+            historical_density=min(_or_default(payload.Historical_Landslide_Count, "Historical_Landslide_Count") / 6, 1),
             risk_score=score, severity=severity,
         )
 
@@ -747,7 +777,7 @@ def prediction(payload: RiskFeatures, db: Session = Depends(get_db)):
     if payload.district:
         db.add(PredictionLog(
             district=payload.district, risk_score=score, severity=severity,
-            rain_24h_mm=payload.Rainfall_mm, source=source,
+            rain_24h_mm=_or_default(payload.Rainfall_mm, "Rainfall_mm"), source=source,
         ))
         db.commit()
         alert = raise_alert(
@@ -764,4 +794,58 @@ def prediction(payload: RiskFeatures, db: Session = Depends(get_db)):
         "contributing_factors": factors,
         "alert_triggered": alert_triggered,
         "risk_cell_id": risk_cell_id,
+        "imputed_fields": missing_features(payload),
+    }
+
+
+@app.get("/api/v1/outlook")
+def outlook(district: str, db: Session = Depends(get_db)):
+    """Probability + a heuristic 'days to critical' estimate for a district, extrapolated
+    from a simple linear trend across its recent /predict readings. This is explicitly a
+    trend estimate from a handful of point-in-time readings, not a validated time-series
+    forecast — landslide timing prediction is a genuinely hard problem no part of this
+    system claims to solve rigorously."""
+    rows = list(reversed(
+        db.query(PredictionLog)
+        .filter(PredictionLog.district == district)
+        .order_by(PredictionLog.created_at.desc())
+        .limit(10)
+        .all()
+    ))
+    if not rows:
+        return {
+            "district": district, "probability": None, "severity": None, "days_to_critical": None,
+            "note": "No readings logged yet for this district — submit a /predict call with this district set first.",
+        }
+    latest = rows[-1]
+    if len(rows) < 2:
+        return {
+            "district": district, "probability": round(latest.risk_score / 100, 4), "severity": latest.severity,
+            "trend_per_day": None, "days_to_critical": None,
+            "note": "Only one reading so far — need at least two over time to estimate a trend.",
+        }
+
+    t0 = rows[0].created_at
+    xs = [(r.created_at - t0).total_seconds() / 86400 for r in rows]  # days since first reading
+    ys = [r.risk_score for r in rows]
+    n = len(xs)
+    mean_x, mean_y = sum(xs) / n, sum(ys) / n
+    denom = sum((x - mean_x) ** 2 for x in xs)
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / denom if denom else 0.0
+
+    days_to_critical = None
+    if latest.risk_score >= 75:
+        days_to_critical = 0.0
+    elif slope > 0.01:
+        estimate = (75 - latest.risk_score) / slope
+        days_to_critical = round(estimate, 1) if estimate <= 365 else None
+
+    return {
+        "district": district,
+        "probability": round(latest.risk_score / 100, 4),
+        "severity": latest.severity,
+        "trend_per_day": round(slope, 2),
+        "days_to_critical": days_to_critical,
+        "readings_used": n,
+        "note": "Heuristic linear-trend estimate from recent modeled readings for this district — not a validated forecast.",
     }

@@ -1,4 +1,4 @@
-from app.main import RiskFeatures, fallback_probability, severity_for
+from app.main import FEATURES, RiskFeatures, fallback_probability, missing_features, severity_for
 
 BASE = dict(
     Rainfall_mm=20, Slope_Angle=15, Soil_Saturation=0.2, Vegetation_Cover=0.8,
@@ -27,3 +27,21 @@ def test_wetter_steeper_and_saturated_input_is_riskier():
         "Soil_Saturation": 0.9, "Vegetation_Cover": 0.1, "Historical_Landslide_Count": 4,
     })
     assert fallback_probability(high) > fallback_probability(low)
+
+
+def test_partial_input_does_not_crash_and_is_flagged_as_imputed():
+    # Only 3 of the 34 readings supplied — e.g. a field station with just a rain gauge.
+    partial = RiskFeatures(Rainfall_mm=200, Rainfall_3Day=400, Rainfall_7Day=600)
+    score = fallback_probability(partial)
+    assert 0.0 <= score <= 1.0
+    missing = missing_features(partial)
+    assert "Rainfall_mm" not in missing
+    assert "Slope_Angle" in missing
+    assert len(missing) == len(FEATURES) - 3
+
+
+def test_fully_missing_input_still_returns_a_valid_score():
+    empty = RiskFeatures()
+    score = fallback_probability(empty)
+    assert 0.0 <= score <= 1.0
+    assert len(missing_features(empty)) == len(FEATURES)
