@@ -258,7 +258,7 @@ export default function App() {
                 <div className="outlook-main">
                   <div className="outlook-probability">
                     <strong>{outlook.probability !== null ? `${Math.round(outlook.probability * 100)}%` : "—"}</strong>
-                    <span>predicted probability</span>
+                    <span>predicted probability within 7 days</span>
                   </div>
                   {outlook.severity && (
                     <span className={`alert-status severity-badge ${outlook.severity}`}>{outlook.severity}</span>
