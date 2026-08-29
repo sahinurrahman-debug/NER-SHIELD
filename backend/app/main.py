@@ -798,13 +798,86 @@ def prediction(payload: RiskFeatures, db: Session = Depends(get_db)):
     }
 
 
+def fetch_rainfall_forecast(latitude: float, longitude: float) -> list[float] | None:
+    """Forecasted daily rainfall totals (today + next 7 days) from Open-Meteo (free,
+    keyless). Used to project risk forward by feeding real forecast rainfall into the
+    trained model, rather than a naive trend extrapolation."""
+    try:
+        response = httpx.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": latitude, "longitude": longitude,
+                "hourly": "precipitation", "past_days": 0, "forecast_days": 8, "timezone": "auto",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        precip = response.json()["hourly"].get("precipitation", [])
+        if len(precip) < 192:  # need 8 full days of hourly data
+            return None
+        return [sum(precip[d * 24:(d + 1) * 24]) for d in range(8)]
+    except (httpx.HTTPError, KeyError, ValueError, IndexError, TypeError):
+        return None
+
+
+def project_future_risk(cell: RiskCell, daily_rain: list[float], horizon_days: int) -> tuple[float, str] | None:
+    """Re-scores the trained model as if `horizon_days` from now, substituting Open-Meteo's
+    forecasted rainfall for that day while holding this cell's known slope/soil/history at
+    their current values (everything else is imputed, same as any partial /predict call)."""
+    if horizon_days >= len(daily_rain):
+        return None
+    features = RiskFeatures(
+        Rainfall_mm=daily_rain[horizon_days],
+        Rainfall_3Day=sum(daily_rain[max(0, horizon_days - 2):horizon_days + 1]),
+        Rainfall_7Day=sum(daily_rain[max(0, horizon_days - 6):horizon_days + 1]),
+        Slope_Angle=cell.slope_deg,
+        Soil_Saturation=min(cell.soil_moisture_pct / 100, 1),
+        Soil_Moisture_Content=min(cell.soil_moisture_pct / 100, 1),
+        Historical_Landslide_Count=min(cell.historical_density * 6, 20),
+    )
+    probability, source = predict(features)
+    return round(probability * 100, 2), source
+
+
 @app.get("/api/v1/outlook")
 def outlook(district: str, db: Session = Depends(get_db)):
     """Probability + a heuristic 'days to critical' estimate for a district, extrapolated
     from a simple linear trend across its recent /predict readings. This is explicitly a
     trend estimate from a handful of point-in-time readings, not a validated time-series
     forecast — landslide timing prediction is a genuinely hard problem no part of this
-    system claims to solve rigorously."""
+    system claims to solve rigorously. Separately, probability_3day/7day are a genuine
+    weather-linked projection using Open-Meteo's actual forecast rainfall (see
+    project_future_risk) — still bounded by that forecast's own accuracy at this range."""
+    projection = {
+        "probability_3day": None, "severity_3day": None,
+        "probability_7day": None, "severity_7day": None,
+        "weather_note": "No risk cell found for this district yet — submit a /predict with latitude/longitude first.",
+    }
+    representative_cell = (
+        db.query(RiskCell).filter(RiskCell.district == district).order_by(RiskCell.risk_score.desc()).first()
+    )
+    if representative_cell is not None:
+        centroid = db.execute(text(
+            "SELECT ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon FROM risk_cells WHERE cell_id = :id"
+        ), {"id": representative_cell.cell_id}).mappings().first()
+        daily_rain = fetch_rainfall_forecast(centroid["lat"], centroid["lon"]) if centroid else None
+        if daily_rain:
+            r3 = project_future_risk(representative_cell, daily_rain, 3)
+            r7 = project_future_risk(representative_cell, daily_rain, 7)
+            if r3:
+                projection["probability_3day"] = round(r3[0] / 100, 4)
+                projection["severity_3day"] = severity_for(r3[0])
+            if r7:
+                projection["probability_7day"] = round(r7[0] / 100, 4)
+                projection["severity_7day"] = severity_for(r7[0])
+            projection["weather_note"] = (
+                "3/7-day figures use Open-Meteo's forecasted rainfall applied to this district's current "
+                "terrain/soil profile through the trained model — a genuine weather-linked projection, "
+                "bounded by that forecast's own accuracy at this range, not a guarantee."
+            )
+        else:
+            projection["weather_note"] = "Could not fetch forecast weather for this district's location right now."
+
     rows = list(reversed(
         db.query(PredictionLog)
         .filter(PredictionLog.district == district)
@@ -816,6 +889,7 @@ def outlook(district: str, db: Session = Depends(get_db)):
         return {
             "district": district, "probability": None, "severity": None, "days_to_critical": None,
             "note": "No readings logged yet for this district — submit a /predict call with this district set first.",
+            **projection,
         }
     latest = rows[-1]
     if len(rows) < 2:
@@ -823,6 +897,7 @@ def outlook(district: str, db: Session = Depends(get_db)):
             "district": district, "probability": round(latest.risk_score / 100, 4), "severity": latest.severity,
             "trend_per_day": None, "days_to_critical": None,
             "note": "Only one reading so far — need at least two over time to estimate a trend.",
+            **projection,
         }
 
     t0 = rows[0].created_at
@@ -848,4 +923,5 @@ def outlook(district: str, db: Session = Depends(get_db)):
         "days_to_critical": days_to_critical,
         "readings_used": n,
         "note": "Heuristic linear-trend estimate from recent modeled readings for this district — not a validated forecast.",
+        **projection,
     }
