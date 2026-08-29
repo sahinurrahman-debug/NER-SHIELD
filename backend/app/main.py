@@ -433,17 +433,25 @@ def fetch_live_weather(latitude: float, longitude: float) -> dict | None:
 
 
 def run_monitor_tick() -> None:
-    """Periodically rescoring every risk cell using live Open-Meteo data (by cell centroid)
-    when WEATHER_PROVIDER=open_meteo, falling back to a random walk otherwise — standing in
-    for a real IMD/sensor polling job until institutional IMD access exists."""
+    """Periodically rescoring every *monitored* risk cell (seeded stations, cell_id not
+    starting with "live-") using live Open-Meteo data (by cell centroid) when
+    WEATHER_PROVIDER=open_meteo, falling back to a random walk otherwise — standing in
+    for a real IMD/sensor polling job until institutional IMD access exists.
+
+    Ad-hoc "live-*" cells created by a one-off /predict call are deliberately excluded:
+    they represent a specific point-in-time prediction, not a continuously-monitored
+    station, so they stay at whatever value the prediction set rather than being
+    silently overwritten by real (often calmer) weather a couple of minutes later."""
     with SessionLocal() as db:
         centroids = {
             row["cell_id"]: (row["lat"], row["lon"])
             for row in db.execute(text(
-                "SELECT cell_id, ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon FROM risk_cells"
+                "SELECT cell_id, ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon "
+                "FROM risk_cells WHERE cell_id NOT LIKE 'live-%'"
             )).mappings().all()
         }
-        for cell in db.query(RiskCell).all():
+        monitored_cells = db.query(RiskCell).filter(~RiskCell.cell_id.like("live-%")).all()
+        for cell in monitored_cells:
             live = None
             if WEATHER_PROVIDER == "open_meteo":
                 lat, lon = centroids.get(cell.cell_id, (None, None))
