@@ -14,6 +14,7 @@ export type Report = {
   id: number; report_type: string; severity: string; description: string;
   latitude: number; longitude: number; district?: string; road_status?: string;
   image_url?: string; reporter_role: string; verification_status: string; created_at: string;
+  trust_score: number | null; trust_flags: string | null;
 };
 
 export async function getSummary() {

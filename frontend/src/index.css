@@ -112,3 +112,11 @@ header p { color: #94a3b8; }
 }
 
 .evac-result { margin-top: 10px; padding-top: 10px; border-top: 1px solid #334155; }
+
+/* --- Photo verification trust badge --- */
+.trust-row { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.trust-badge { align-self: flex-start; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 3px 9px; border-radius: 999px; }
+.trust-badge.trust-high { background: #14532d; color: #86efac; }
+.trust-badge.trust-medium { background: #713f12; color: #fde68a; }
+.trust-badge.trust-low { background: #7f1d1d; color: #fca5a5; }
+.trust-flags { color: #64748b; font-size: 0.78rem; }

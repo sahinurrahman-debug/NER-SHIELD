@@ -15,6 +15,7 @@ import joblib
 import networkx as nx
 import numpy as np
 import shap
+from PIL import Image, UnidentifiedImageError
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -109,6 +110,8 @@ class FieldReport(Base):
     image_url: Mapped[str | None] = mapped_column(String(512), nullable=True)  # photo or video URL
     reporter_role: Mapped[str] = mapped_column(String(32), default="citizen")
     verification_status: Mapped[str] = mapped_column(String(16), default="pending")
+    trust_score: Mapped[int | None] = mapped_column(Integer, nullable=True)  # see analyze_photo()
+    trust_flags: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -210,6 +213,8 @@ class ReportOut(ReportCreate):
     model_config = ConfigDict(from_attributes=True)
     id: int
     verification_status: str
+    trust_score: int | None = None
+    trust_flags: str | None = None
     created_at: datetime
 
 
@@ -463,6 +468,84 @@ def population_near(db: Session, latitude: float, longitude: float, radius_deg: 
           AND ST_DWithin(geom, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326), :radius)
     """), {"lat": latitude, "lon": longitude, "radius": radius_deg}).scalar()
     return int(result or 0)
+
+
+# --- Photo verification (metadata + integrity, not a deep-learning content classifier) ------
+# A full image classifier (recognizing "this looks like a landslide") would need PyTorch/
+# TensorFlow — hundreds of MB, fragile to deploy reliably here, and not even well-trained for
+# this specific domain without a custom labeled dataset. Instead this checks real, honest
+# signals: does the photo's own embedded GPS match where the report claims it was taken, is
+# the photo's embedded timestamp recent, and is the image actually readable/non-blank.
+
+def _dms_to_decimal(dms: tuple, ref: str) -> float:
+    d, m, s = dms
+    dd = float(d) + float(m) / 60 + float(s) / 3600
+    return -dd if ref in ("S", "W") else dd
+
+
+def analyze_photo(path: Path, claimed_lat: float, claimed_lon: float, report_created_at: datetime) -> tuple[int | None, str | None]:
+    """Returns (trust_score 0-100, human-readable flags) from EXIF GPS/timestamp
+    cross-checks and a basic blank-image check — or (None, None) if the file isn't a
+    readable static image (e.g. a video, which this doesn't analyze)."""
+    try:
+        image = Image.open(path)
+        image.load()
+    except (UnidentifiedImageError, OSError):
+        return 0, "Could not read this as a valid image file."
+
+    score = 60  # neutral baseline: file opened fine, no strong signal either way yet
+    flags: list[str] = []
+
+    exif = image.getexif()
+    gps = exif.get_ifd(0x8825) if exif else {}
+    if gps and 2 in gps and 4 in gps:
+        try:
+            photo_lat = _dms_to_decimal(gps[2], gps.get(1, "N"))
+            photo_lon = _dms_to_decimal(gps[4], gps.get(3, "E"))
+            distance_km = _haversine_km(photo_lon, photo_lat, claimed_lon, claimed_lat)
+            if distance_km <= 2:
+                score += 25
+                flags.append(f"Photo location matches the reported location ({distance_km:.1f}km away)")
+            elif distance_km <= 10:
+                score += 5
+                flags.append(f"Photo location is roughly near the reported location ({distance_km:.1f}km away)")
+            else:
+                score -= 35
+                flags.append(f"Photo location is {distance_km:.0f}km from the reported location — possible mismatch")
+        except (TypeError, ZeroDivisionError, KeyError):
+            flags.append("Photo has GPS data in an unexpected format.")
+    else:
+        flags.append("Photo has no embedded GPS data (common — many phones strip this on upload).")
+
+    exif_sub = exif.get_ifd(0x8769) if exif else {}
+    taken_at = exif_sub.get(36867) or exif_sub.get(36868)  # DateTimeOriginal, else DateTimeDigitized
+    if taken_at:
+        try:
+            photo_dt = datetime.strptime(str(taken_at), "%Y:%m:%d %H:%M:%S")
+            age_days = (report_created_at.replace(tzinfo=None) - photo_dt).total_seconds() / 86400
+            if -1 <= age_days <= 2:
+                score += 15
+                flags.append("Photo appears to have been taken recently.")
+            elif age_days > 30:
+                score -= 25
+                flags.append(f"Photo appears to be about {int(age_days)} days old.")
+        except ValueError:
+            flags.append("Photo has a timestamp in an unexpected format.")
+    else:
+        flags.append("Photo has no embedded timestamp.")
+
+    try:
+        gray = image.convert("L")
+        pixels = list(gray.getdata())
+        mean = sum(pixels) / len(pixels)
+        std = (sum((p - mean) ** 2 for p in pixels) / len(pixels)) ** 0.5
+        if std < 8:
+            score -= 40
+            flags.append("Image appears blank or near-uniform — may not be a genuine photo.")
+    except Exception:
+        pass
+
+    return max(0, min(100, score)), "; ".join(flags)
 
 
 # --- Evacuation route planning ---------------------------------------------------------------
@@ -719,6 +802,8 @@ async def lifespan(_: FastAPI):
         conn.execute(text("ALTER TABLE infrastructure ADD COLUMN IF NOT EXISTS population INTEGER"))
         conn.execute(text("UPDATE infrastructure SET population = 45000 WHERE name = 'Mawlai' AND population IS NULL"))
         conn.execute(text("UPDATE infrastructure SET population = 20000 WHERE name = 'Nongthymmai' AND population IS NULL"))
+        conn.execute(text("ALTER TABLE field_reports ADD COLUMN IF NOT EXISTS trust_score INTEGER"))
+        conn.execute(text("ALTER TABLE field_reports ADD COLUMN IF NOT EXISTS trust_flags TEXT"))
     if Path(MODEL_PATH).exists():
         candidate = joblib.load(MODEL_PATH)
         expected = list(getattr(candidate, "feature_names_in_", FEATURES))
@@ -967,6 +1052,18 @@ def create_report(payload: ReportCreate, db: Session = Depends(get_db)):
     db.add(report)
     db.commit()
     db.refresh(report)
+
+    if report.image_url:
+        local_path = Path(UPLOAD_DIR) / Path(report.image_url).name
+        if local_path.suffix.lower() in {".mp4", ".webm"}:
+            report.trust_score, report.trust_flags = None, "Video attachments aren't automatically analyzed yet."
+        elif local_path.exists():
+            report.trust_score, report.trust_flags = analyze_photo(
+                local_path, report.latitude, report.longitude, report.created_at
+            )
+        db.commit()
+        db.refresh(report)
+
     if report.severity in ("high", "critical"):
         # A verified-severity citizen/field report is real ground truth — reflect it on the
         # map and severity counts too, not just the alerts panel. Uses a representative score

@@ -452,6 +452,14 @@ export default function App() {
             {reports.map((report) => <article className="report" key={report.id}>
               <b>{report.severity.toUpperCase()} · {report.report_type.replace("_", " ")}</b>
               <p>{report.description}</p><small>{report.district ?? "Unknown district"} · {report.road_status ?? "road status not set"}</small>
+              {report.trust_score !== null && (
+                <div className="trust-row" title={report.trust_flags ?? ""}>
+                  <span className={`trust-badge ${report.trust_score >= 70 ? "trust-high" : report.trust_score >= 40 ? "trust-medium" : "trust-low"}`}>
+                    Photo trust {report.trust_score}%
+                  </span>
+                  {report.trust_flags && <small className="trust-flags">{report.trust_flags}</small>}
+                </div>
+              )}
             </article>)}
           </div>
         </aside>
