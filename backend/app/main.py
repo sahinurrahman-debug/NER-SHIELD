@@ -1866,6 +1866,30 @@ def prediction(payload: RiskFeatures, db: Session = Depends(get_db)):
             historical_density=min(_or_default(payload.Historical_Landslide_Count, "Historical_Landslide_Count") / 6, 1),
             risk_score=score, severity=severity,
         )
+    elif payload.district:
+        # No exact coordinates given — if this district already has a risk cell (seeded or
+        # from an earlier live prediction), update that one in place so the map and
+        # Emergency response prioritisation table (both read from risk_cells) reflect this
+        # reading too, not just the outlook/forecast panels. Without this, a district-only
+        # prediction could raise a critical alert while the prioritisation table kept
+        # showing that district's old score indefinitely.
+        existing_cell = db.execute(text(
+            "SELECT cell_id FROM risk_cells WHERE district = :district ORDER BY updated_at DESC LIMIT 1"
+        ), {"district": payload.district}).mappings().first()
+        if existing_cell:
+            risk_cell_id = existing_cell["cell_id"]
+            db.execute(text("""
+                UPDATE risk_cells SET risk_score = :score, severity = :severity,
+                    rain_24h_mm = :rain, soil_moisture_pct = :soil, updated_at = now()
+                WHERE cell_id = :cell_id
+            """), {
+                "score": score, "severity": severity,
+                "rain": _or_default(payload.Rainfall_mm, "Rainfall_mm"),
+                "soil": _or_default(payload.Soil_Moisture_Content, "Soil_Moisture_Content") * 100,
+                "cell_id": risk_cell_id,
+            })
+            db.commit()
+            live_manager.broadcast({"type": "risk_cells", "features": _risk_cell_features_by_ids(db, [risk_cell_id])})
 
     alert_triggered = False
     if payload.district:
