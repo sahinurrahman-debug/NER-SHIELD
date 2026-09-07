@@ -1,6 +1,12 @@
 
 const API = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
+// Live push channel (see backend's /ws/live + ConnectionManager) — new alerts and risk-cell
+// changes are broadcast the instant they happen, instead of the dashboard polling on a timer.
+export function getWsUrl(path: string) {
+  return `${API.replace(/^http/, "ws")}${path}`;
+}
+
 export type Feature = {
   type: "Feature";
   geometry: GeoJSON.Geometry;
@@ -40,6 +46,10 @@ export type Alert = {
   severity: string; message: string; channel: string; recipients: string | null;
   status: string; satellite_status: string | null; satellite_note: string | null; created_at: string;
 };
+
+export type LiveMessage =
+  | { type: "alert"; alert: Alert }
+  | { type: "risk_cells"; features: Feature[] };
 
 export async function getAlerts() {
   const response = await fetch(`${API}/api/v1/alerts`);

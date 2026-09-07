@@ -16,7 +16,7 @@ import networkx as nx
 import numpy as np
 import shap
 from PIL import Image, UnidentifiedImageError
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from geoalchemy2 import Geometry
@@ -89,6 +89,42 @@ loaded_model = None
 monitor_task: asyncio.Task | None = None
 shap_explainer = None  # set in lifespan() if the trained model's internals can be extracted
 shap_imputer = None
+main_event_loop: asyncio.AbstractEventLoop | None = None  # set in lifespan(), see ConnectionManager.broadcast()
+
+
+class ConnectionManager:
+    """Tracks connected /ws/live dashboard clients and pushes JSON events to all of them —
+    new alerts and risk-cell changes land the instant they happen, no client polling needed.
+    broadcast() is deliberately a plain sync method: raise_alert(), run_monitor_tick() and
+    upsert_risk_cell() are all sync code (some running in FastAPI's request threadpool, not
+    the main event loop), so it hands the actual send off to the main loop via
+    run_coroutine_threadsafe rather than requiring every caller to become async."""
+
+    def __init__(self):
+        self.active: set[WebSocket] = set()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.active.add(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        self.active.discard(websocket)
+
+    async def _send_to_all(self, payload: str) -> None:
+        for websocket in list(self.active):
+            try:
+                await websocket.send_text(payload)
+            except Exception:
+                self.active.discard(websocket)
+
+    def broadcast(self, message: dict) -> None:
+        if not self.active or main_event_loop is None:
+            return
+        payload = json.dumps(message, default=str)
+        asyncio.run_coroutine_threadsafe(self._send_to_all(payload), main_event_loop)
+
+
+live_manager = ConnectionManager()
 
 
 class Base(DeclarativeBase):
@@ -548,6 +584,16 @@ def raise_alert(
     db.add(alert)
     db.commit()
     db.refresh(alert)
+    live_manager.broadcast({
+        "type": "alert",
+        "alert": {
+            "id": alert.id, "source_type": alert.source_type, "source_id": alert.source_id,
+            "district": alert.district, "severity": alert.severity, "message": alert.message,
+            "channel": alert.channel, "recipients": alert.recipients, "status": alert.status,
+            "satellite_status": alert.satellite_status, "satellite_note": alert.satellite_note,
+            "created_at": alert.created_at.isoformat(),
+        },
+    })
     return alert
 
 
@@ -721,6 +767,7 @@ def upsert_risk_cell(
         "score": risk_score, "severity": severity,
     })
     db.commit()
+    live_manager.broadcast({"type": "risk_cells", "features": _risk_cell_features_by_ids(db, [cell_id])})
     return cell_id
 
 
@@ -1091,6 +1138,10 @@ def run_monitor_tick() -> None:
                     ),
                 )
         db.commit()
+        live_manager.broadcast({
+            "type": "risk_cells",
+            "features": _risk_cell_features_by_ids(db, [cell.cell_id for cell in monitored_cells]),
+        })
 
 
 async def monitor_loop() -> None:
@@ -1176,7 +1227,8 @@ def seed_evacuation_roads() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global loaded_model, monitor_task, shap_explainer, shap_imputer
+    global loaded_model, monitor_task, shap_explainer, shap_imputer, main_event_loop
+    main_event_loop = asyncio.get_running_loop()
     Base.metadata.create_all(bind=engine)  # MVP only; use Alembic migrations before production.
     # create_all() only creates missing tables, it never alters an existing one — this
     # covers adding `population` to a database that already had `infrastructure` rows
@@ -1247,6 +1299,30 @@ def summary(db: Session = Depends(get_db)):
     }
 
 
+def _row_to_feature(row) -> dict:
+    return {
+        "type": "Feature",
+        "geometry": json.loads(row["geometry"]),
+        "properties": {
+            key: (value.isoformat() if hasattr(value, "isoformat") else value)
+            for key, value in row.items() if key != "geometry"
+        },
+    }
+
+
+def _risk_cell_features_by_ids(db: Session, cell_ids: list[str]) -> list[dict]:
+    """Same row shape as GET /api/v1/risk-cells, filtered to specific cells — used to push
+    exactly what changed over /ws/live instead of the whole layer on every update."""
+    if not cell_ids:
+        return []
+    rows = db.execute(text("""
+        SELECT cell_id,district,slope_deg,rain_24h_mm,soil_moisture_pct,historical_density,
+               risk_score,severity,updated_at,ST_AsGeoJSON(geom) AS geometry
+        FROM risk_cells WHERE cell_id = ANY(:ids)
+    """), {"ids": cell_ids}).mappings().all()
+    return [_row_to_feature(row) for row in rows]
+
+
 @app.get("/api/v1/risk-cells")
 def risk_cells(min_score: float = 0, db: Session = Depends(get_db)):
     if not 0 <= min_score <= 100:
@@ -1256,20 +1332,20 @@ def risk_cells(min_score: float = 0, db: Session = Depends(get_db)):
                risk_score,severity,updated_at,ST_AsGeoJSON(geom) AS geometry
         FROM risk_cells WHERE risk_score >= :score ORDER BY risk_score DESC
     """), {"score": min_score}).mappings().all()
-    return {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "geometry": json.loads(row["geometry"]),
-                "properties": {
-                    key: (value.isoformat() if hasattr(value, "isoformat") else value)
-                    for key, value in row.items() if key != "geometry"
-                },
-            }
-            for row in rows
-        ],
-    }
+    return {"type": "FeatureCollection", "features": [_row_to_feature(row) for row in rows]}
+
+
+@app.websocket("/ws/live")
+async def ws_live(websocket: WebSocket):
+    """Push channel for the dashboard: new alerts and risk-cell changes are broadcast the
+    instant they happen (see ConnectionManager above), instead of the client polling on a
+    timer. The client doesn't need to send anything — this just keeps the socket open."""
+    await live_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        live_manager.disconnect(websocket)
 
 
 @app.get("/api/v1/infrastructure")

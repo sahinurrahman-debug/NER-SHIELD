@@ -1,14 +1,14 @@
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Feature as GeoJsonFeature } from "geojson";
 import { Circle, CircleMarker as RLCircleMarker, GeoJSON, MapContainer, Polyline, Popup, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { CircleMarker } from "leaflet";
 import type { Map as LeafletMap, PathOptions } from "leaflet";
 import {
   getAlerts, getEvacuationRoute, getForecast, getInfrastructure, getNdviChange, getOutlook, getPriorities, getReports,
-  getRiskCells, getRoadStatus, getSummary, imageUrl, runPrediction,
-  type Alert, type EvacuationRoute, type Feature as RiskFeature, type ForecastPoint, type InfraFeature, type NdviChange,
-  type Outlook, type PredictResponse, type Priority, type Report,
+  getRiskCells, getRoadStatus, getSummary, getWsUrl, imageUrl, runPrediction,
+  type Alert, type EvacuationRoute, type Feature as RiskFeature, type ForecastPoint, type InfraFeature,
+  type LiveMessage, type NdviChange, type Outlook, type PredictResponse, type Priority, type Report,
 } from "./api";
 
 const colours: Record<string, string> = {
@@ -86,7 +86,6 @@ export default function App() {
   const [infra, setInfra] = useState<InfraFeature[]>([]);
   const [roadCounts, setRoadCounts] = useState<Record<string, number>>({});
   const [priorities, setPriorities] = useState<Priority[]>([]);
-  const [counts, setCounts] = useState<Record<string, number>>({});
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [forecastDistrict, setForecastDistrict] = useState("East Khasi Hills");
@@ -105,12 +104,21 @@ export default function App() {
   const [ndviResult, setNdviResult] = useState<NdviChange | null>(null);
   const [ndviBusy, setNdviBusy] = useState(false);
   const [ndviError, setNdviError] = useState("");
+  const [wsConnected, setWsConnected] = useState(false);
   const mapRef = useRef<LeafletMap | null>(null);
+
+  // Derived live from `cells` (not a separate fetched snapshot) so a risk-cell update pushed
+  // over /ws/live — a new severity from the monitor loop, a fresh live prediction — updates
+  // these cards the instant it arrives, with no extra request and no refresh.
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const cell of cells) c[cell.properties.severity] = (c[cell.properties.severity] ?? 0) + 1;
+    return c;
+  }, [cells]);
 
   useEffect(() => {
     Promise.all([getSummary(), getRiskCells(), getReports(), getAlerts(), getInfrastructure(), getRoadStatus(), getPriorities()])
       .then(([summary, cellsResponse, reportsResponse, alertsResponse, infraResponse, roadStatusResponse, prioritiesResponse]) => {
-        setCounts(summary.risk_counts);
         setNotice(summary.demo_notice);
         setCells(cellsResponse.features);
         setReports(reportsResponse);
@@ -124,6 +132,49 @@ export default function App() {
       })
       .catch((err: Error) => setError(err.message));
     getOutlook("East Khasi Hills").then(setOutlook).catch(() => {});
+  }, []);
+
+  // Live push channel: new alerts and risk-cell changes arrive the instant they happen on the
+  // backend (see ConnectionManager/raise_alert/run_monitor_tick), no polling. Auto-reconnects
+  // with a short fixed delay so a Render free-tier idle disconnect doesn't need a page refresh.
+  useEffect(() => {
+    let cancelled = false;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+
+    function connect() {
+      if (cancelled) return;
+      socket = new WebSocket(getWsUrl("/ws/live"));
+      socket.onopen = () => setWsConnected(true);
+      socket.onclose = () => {
+        setWsConnected(false);
+        if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
+      };
+      socket.onerror = () => socket?.close();
+      socket.onmessage = (event) => {
+        let msg: LiveMessage;
+        try {
+          msg = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        if (msg.type === "alert") {
+          setAlerts((prev) => [msg.alert, ...prev.filter((a) => a.id !== msg.alert.id)]);
+        } else if (msg.type === "risk_cells") {
+          setCells((prev) => {
+            const byId = new Map(prev.map((c) => [c.properties.cell_id, c]));
+            for (const feature of msg.features) byId.set((feature.properties as RiskFeature["properties"]).cell_id, feature as RiskFeature);
+            return Array.from(byId.values());
+          });
+        }
+      };
+    }
+    connect();
+    return () => {
+      cancelled = true;
+      clearTimeout(reconnectTimer);
+      socket?.close();
+    };
   }, []);
 
   function loadForecast() {
@@ -186,7 +237,8 @@ export default function App() {
       <header>
         <div><h1>NER-SHIELD</h1><p>NER landslide decision-support dashboard</p></div>
         <div className="header-right">
-          <span className="live-dot" /><span className="live-label">LIVE</span>
+          <span className={`live-dot ${wsConnected ? "" : "offline"}`} title={wsConnected ? "Live WebSocket connected" : "Reconnecting…"} />
+          <span className="live-label">{wsConnected ? "LIVE" : "RECONNECTING"}</span>
           <span className="badge">DEMO</span>
         </div>
       </header>
