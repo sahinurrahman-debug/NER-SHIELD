@@ -315,7 +315,7 @@ export default function App() {
           </MapContainer>
         </div>
         <aside className="alerts-panel hero-alerts">
-          <h2 className="panel-title"><span className="dot" />Recent alerts</h2>
+          <h2 className="panel-title"><span className="dot" />Recent Alerts</h2>
           <p className="forecast-note">
             SMS is the primary channel; when it can't confirm real delivery — the exact scenario
             where a landslide has taken out both the cell tower and local internet — a Satellite
