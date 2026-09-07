@@ -1392,17 +1392,24 @@ async def seed_ner_hospitals() -> None:
     Overpass query can take tens of seconds. Real OSM data — just fetched ahead of time
     instead of live per click, which also sidesteps Overpass's shared-server rate limits
     during actual usage."""
-    with SessionLocal() as db:
-        existing = db.execute(text("SELECT COUNT(*) FROM infrastructure WHERE kind = 'hospital'")).scalar()
-        if existing and existing > 1:
-            return
-        # Rough bounding box covering all eight North Eastern Region states.
-        south, west, north, east = 22.0, 88.0, 29.5, 97.5
-        query = (
-            f"[out:json][timeout:60];(node[\"amenity\"=\"hospital\"]({south},{west},{north},{east});"
-            f"way[\"amenity\"=\"hospital\"]({south},{west},{north},{east}););out center 3000;"
-        )
-        try:
+    # Wraps the whole function, not just the network call: this runs as an unawaited
+    # fire-and-forget asyncio.create_task() in lifespan(), so any exception that escapes —
+    # a DB error, a bug in the parsing loop, anything — would otherwise die completely
+    # silently (asyncio only logs it if the task object happens to get garbage-collected).
+    try:
+        logger.info("NER-wide hospital seed: starting")
+        with SessionLocal() as db:
+            existing = db.execute(text("SELECT COUNT(*) FROM infrastructure WHERE kind = 'hospital'")).scalar()
+            logger.info("NER-wide hospital seed: %s existing hospital row(s)", existing)
+            if existing and existing > 1:
+                logger.info("NER-wide hospital seed: already populated, skipping")
+                return
+            # Rough bounding box covering all eight North Eastern Region states.
+            south, west, north, east = 22.0, 88.0, 29.5, 97.5
+            query = (
+                f"[out:json][timeout:60];(node[\"amenity\"=\"hospital\"]({south},{west},{north},{east});"
+                f"way[\"amenity\"=\"hospital\"]({south},{west},{north},{east}););out center 3000;"
+            )
             response = await asyncio.to_thread(
                 httpx.post,
                 "https://overpass-api.de/api/interpreter",
@@ -1410,27 +1417,35 @@ async def seed_ner_hospitals() -> None:
                 headers={"User-Agent": "NER-SHIELD/1.0 (landslide early-warning system; SIH 2026)", "Accept": "application/json"},
                 timeout=90,
             )
+            logger.info("NER-wide hospital seed: Overpass responded with HTTP %s", response.status_code)
             response.raise_for_status()
             elements = response.json().get("elements", [])
-        except (httpx.HTTPError, KeyError, ValueError) as exc:
-            logger.error("NER-wide hospital seed failed (will retry next startup): %r", exc)
-            return
+            logger.info("NER-wide hospital seed: Overpass returned %d elements", len(elements))
 
-        inserted = 0
-        for el in elements:
-            lat = el.get("lat") or el.get("center", {}).get("lat")
-            lon = el.get("lon") or el.get("center", {}).get("lon")
-            if lat is None or lon is None:
-                continue
-            name = el.get("tags", {}).get("name") or "Unnamed hospital"
-            district = el.get("tags", {}).get("addr:district")
-            db.execute(text("""
-                INSERT INTO infrastructure (kind, name, district, geom)
-                VALUES ('hospital', :name, :district, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
-            """), {"name": name, "district": district, "lon": lon, "lat": lat})
-            inserted += 1
-        db.commit()
-        logger.info("Seeded %d real hospitals across NER from OpenStreetMap", inserted)
+            rows = []
+            for el in elements:
+                lat = el.get("lat") or el.get("center", {}).get("lat")
+                lon = el.get("lon") or el.get("center", {}).get("lon")
+                if lat is None or lon is None:
+                    continue
+                rows.append({
+                    "name": el.get("tags", {}).get("name") or "Unnamed hospital",
+                    "district": el.get("tags", {}).get("addr:district"),
+                    "lon": lon, "lat": lat,
+                })
+            logger.info("NER-wide hospital seed: inserting %d rows in one batch", len(rows))
+            if rows:
+                # One batched executemany-style call instead of one round trip per row — a
+                # few thousand individual INSERTs against a remote DB could otherwise take
+                # minutes on their own.
+                db.execute(text("""
+                    INSERT INTO infrastructure (kind, name, district, geom)
+                    VALUES ('hospital', :name, :district, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
+                """), rows)
+            db.commit()
+            logger.info("NER-wide hospital seed: inserted %d real hospitals from OpenStreetMap", len(rows))
+    except Exception as exc:
+        logger.error("NER-wide hospital seed failed (will retry next startup): %r", exc, exc_info=True)
 
 
 @asynccontextmanager
