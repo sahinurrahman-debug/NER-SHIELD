@@ -818,8 +818,12 @@ def _nearest_hospital_overpass(lat: float, lon: float, radius_km: float = 15.0) 
             timeout=15,
         )
         response.raise_for_status()
+        elements = response.json().get("elements", [])
+        if not elements:
+            logger.error("Overpass found no hospitals within %.0fkm of (%s, %s)", radius_km, lat, lon)
+            return None
         best, best_dist = None, float("inf")
-        for el in response.json().get("elements", []):
+        for el in elements:
             el_lat = el.get("lat") or el.get("center", {}).get("lat")
             el_lon = el.get("lon") or el.get("center", {}).get("lon")
             if el_lat is None or el_lon is None:
@@ -829,7 +833,8 @@ def _nearest_hospital_overpass(lat: float, lon: float, radius_km: float = 15.0) 
                 name = el.get("tags", {}).get("name") or "Unnamed hospital"
                 best, best_dist = {"name": name, "lat": el_lat, "lon": el_lon}, dist
         return best
-    except (httpx.HTTPError, KeyError, ValueError):
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        logger.error("Overpass hospital lookup near (%s, %s) failed: %r", lat, lon, exc)
         return None
 
 
@@ -847,6 +852,7 @@ def _osrm_route(from_lat: float, from_lon: float, to_lat: float, to_lon: float) 
         response.raise_for_status()
         body = response.json()
         if body.get("code") != "Ok" or not body.get("routes"):
+            logger.error("OSRM returned no route from (%s,%s) to (%s,%s): code=%s", from_lat, from_lon, to_lat, to_lon, body.get("code"))
             return None
         route = body["routes"][0]
         roads_used: list[str] = []
@@ -860,7 +866,8 @@ def _osrm_route(from_lat: float, from_lon: float, to_lat: float, to_lon: float) 
             "path": route["geometry"]["coordinates"],
             "roads_used": roads_used or ["(unnamed roads)"],
         }
-    except (httpx.HTTPError, KeyError, ValueError, IndexError):
+    except (httpx.HTTPError, KeyError, ValueError, IndexError) as exc:
+        logger.error("OSRM route from (%s,%s) to (%s,%s) failed: %r", from_lat, from_lon, to_lat, to_lon, exc)
         return None
 
 
