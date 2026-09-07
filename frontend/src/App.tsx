@@ -237,7 +237,10 @@ export default function App() {
   return (
     <main>
       <header>
-        <div><h1>NER-SHIELD</h1><p>NER landslide decision-support dashboard</p></div>
+        <div className="brand">
+          <img src="/logo-mark.svg" alt="" className="brand-logo" width={40} height={40} />
+          <div><h1>NER-SHIELD</h1><p>NER landslide decision-support dashboard</p></div>
+        </div>
         <div className="header-right">
           <span className={`live-dot ${wsConnected ? "" : "offline"}`} title={wsConnected ? "Live WebSocket connected" : "Reconnecting…"} />
           <span className="live-label">{wsConnected ? "LIVE" : "RECONNECTING"}</span>

@@ -5,7 +5,6 @@
       <stop offset="100%" stop-color="#d97706"/>
     </linearGradient>
   </defs>
-  <rect x="0" y="0" width="1024" height="1024" fill="#0f172a"/>
   <path d="M170,190 L854,190 C930,260 930,190 930,480 C930,700 760,850 512,950 C94,700 264,850 94,480 C94,190 94,260 170,190 Z"
         fill="url(#shieldGrad)" stroke="#0f172a" stroke-width="20"/>
   <polygon points="280,690 432,448 526,576 612,428 784,690" fill="#f8fafc"/>
