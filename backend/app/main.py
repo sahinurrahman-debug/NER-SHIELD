@@ -872,43 +872,64 @@ def fetch_ndvi_change(db: Session, cell_id: str, *, force_refresh: bool = False)
 
     bbox = [cell["minx"], cell["miny"], cell["maxx"], cell["maxy"]]
     now = datetime.now(timezone.utc)
-    after_from, after_to = now - timedelta(days=90), now
-    before_from, before_to = now - timedelta(days=455), now - timedelta(days=365)
+    # Windows are widened to 150 days (vs. a plain 90) because parts of NER — Cherrapunji/Sohra
+    # in East Khasi Hills chief among them — are among the cloudiest places on Earth; a shorter
+    # window can go entirely without a cloud-free Sentinel-2 pass during monsoon months.
+    after_from, after_to = now - timedelta(days=150), now
+    before_from, before_to = now - timedelta(days=515), now - timedelta(days=365)
 
     mean_before = _sh_mean_ndvi(token, bbox, before_from, before_to)
     mean_after = _sh_mean_ndvi(token, bbox, after_from, after_to)
-    if mean_before is None or mean_after is None:
-        if existing:
-            return _ndvi_reading_out(existing, configured=True, cached=True)
-        return {
-            "cell_id": cell_id, "district": cell["district"], "configured": True,
-            "before_period": {"from": before_from.isoformat(), "to": before_to.isoformat()},
-            "after_period": {"from": after_from.isoformat(), "to": after_to.isoformat()},
-            "mean_ndvi_before": mean_before, "mean_ndvi_after": mean_after,
-            "ndvi_delta": None, "vegetation_loss_pct": None, "severity": "unavailable",
-            "before_image_url": None, "after_image_url": None,
-            "cached": False, "computed_at": None,
-            "note": (
-                "No usable cloud-free Sentinel-2 coverage for this cell in one or both time "
-                "windows — common during NER's monsoon season. Try again later."
-            ),
-        }
 
+    # Fetch the least-cloudy scene image regardless of whether the stricter cloud-free stats
+    # succeeded — a real (if imperfect) satellite photo is still worth showing even when the
+    # numeric NDVI comparison can't be trusted.
     before_path = NDVI_DIR / f"{cell_id}-before.png"
     after_path = NDVI_DIR / f"{cell_id}-after.png"
     got_before_img = _sh_ndvi_image(token, bbox, before_from, before_to, before_path)
     got_after_img = _sh_ndvi_image(token, bbox, after_from, after_to, after_path)
 
-    delta = round(mean_after - mean_before, 4)
-    loss_pct = round(max(0.0, -delta) / max(abs(mean_before), 0.01) * 100, 1)
-    if delta <= -0.15:
-        severity = "significant vegetation loss"
-    elif delta <= -0.05:
-        severity = "moderate vegetation loss"
-    elif delta >= 0.05:
-        severity = "vegetation gain"
+    if mean_before is not None and mean_after is not None:
+        delta = round(mean_after - mean_before, 4)
+        loss_pct = round(max(0.0, -delta) / max(abs(mean_before), 0.01) * 100, 1)
+        if delta <= -0.15:
+            severity = "significant vegetation loss"
+        elif delta <= -0.05:
+            severity = "moderate vegetation loss"
+        elif delta >= 0.05:
+            severity = "vegetation gain"
+        else:
+            severity = "stable"
+        note = (
+            "Real Sentinel-2 L2A NDVI, cloud/shadow-masked via the scene classification band, "
+            "aggregated over each date window by Sentinel Hub's Statistical API. Vegetation loss "
+            "is a leading indicator, not a standalone landslide prediction — deforested slopes "
+            "lose the root-cohesion that stabilises soil."
+        )
     else:
-        severity = "stable"
+        delta, loss_pct, severity = None, None, "unavailable"
+        if not (got_before_img or got_after_img):
+            if existing:
+                return _ndvi_reading_out(existing, configured=True, cached=True)
+            return {
+                "cell_id": cell_id, "district": cell["district"], "configured": True,
+                "before_period": {"from": before_from.isoformat(), "to": before_to.isoformat()},
+                "after_period": {"from": after_from.isoformat(), "to": after_to.isoformat()},
+                "mean_ndvi_before": None, "mean_ndvi_after": None,
+                "ndvi_delta": None, "vegetation_loss_pct": None, "severity": "unavailable",
+                "before_image_url": None, "after_image_url": None,
+                "cached": False, "computed_at": None,
+                "note": (
+                    "No usable Sentinel-2 imagery at all for this cell in one or both 150-day "
+                    "windows — common in NER's monsoon climate. Try again later."
+                ),
+            }
+        note = (
+            "Numeric NDVI comparison unavailable — no fully cloud-free Sentinel-2 pixels in one "
+            "or both 150-day windows (common in NER's monsoon climate, especially Cherrapunji/"
+            "Sohra). The image(s) below are the least-cloudy real Sentinel-2 scene found in each "
+            "window, not a cloud-free composite."
+        )
 
     if existing is None:
         existing = NdviReading(cell_id=cell_id)
@@ -916,17 +937,13 @@ def fetch_ndvi_change(db: Session, cell_id: str, *, force_refresh: bool = False)
     existing.district = cell["district"]
     existing.before_from, existing.before_to = before_from, before_to
     existing.after_from, existing.after_to = after_from, after_to
-    existing.mean_ndvi_before, existing.mean_ndvi_after = round(mean_before, 4), round(mean_after, 4)
+    existing.mean_ndvi_before = round(mean_before, 4) if mean_before is not None else None
+    existing.mean_ndvi_after = round(mean_after, 4) if mean_after is not None else None
     existing.ndvi_delta, existing.vegetation_loss_pct = delta, loss_pct
     existing.severity = severity
     existing.before_image_url = f"/uploads/ndvi/{before_path.name}" if got_before_img else None
     existing.after_image_url = f"/uploads/ndvi/{after_path.name}" if got_after_img else None
-    existing.note = (
-        "Real Sentinel-2 L2A NDVI, cloud/shadow-masked via the scene classification band, "
-        "aggregated over each date window by Sentinel Hub's Statistical API. Vegetation loss "
-        "is a leading indicator, not a standalone landslide prediction — deforested slopes "
-        "lose the root-cohesion that stabilises soil."
-    )
+    existing.note = note
     db.commit()
     db.refresh(existing)
     return _ndvi_reading_out(existing, configured=True, cached=False)

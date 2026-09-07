@@ -408,23 +408,23 @@ export default function App() {
                 {ndviResult.vegetation_loss_pct !== null && ndviResult.vegetation_loss_pct > 0 && (
                   <p className="forecast-note">Estimated vegetation loss: <b>{ndviResult.vegetation_loss_pct}%</b></p>
                 )}
-                {(ndviResult.before_image_url || ndviResult.after_image_url) && (
-                  <div className="ndvi-images">
-                    <div className="ndvi-img-wrap">
-                      <small>Before ({ndviResult.before_period?.from.slice(0, 10)} to {ndviResult.before_period?.to.slice(0, 10)})</small>
-                      {ndviResult.before_image_url
-                        ? <img src={imageUrl(ndviResult.before_image_url)} alt="NDVI before" />
-                        : <div className="ndvi-img-missing">No cloud-free scene available</div>}
-                    </div>
-                    <div className="ndvi-img-wrap">
-                      <small>After ({ndviResult.after_period?.from.slice(0, 10)} to {ndviResult.after_period?.to.slice(0, 10)})</small>
-                      {ndviResult.after_image_url
-                        ? <img src={imageUrl(ndviResult.after_image_url)} alt="NDVI after" />
-                        : <div className="ndvi-img-missing">No cloud-free scene available</div>}
-                    </div>
-                  </div>
-                )}
               </>
+            )}
+            {(ndviResult.before_image_url || ndviResult.after_image_url) && (
+              <div className="ndvi-images">
+                <div className="ndvi-img-wrap">
+                  <small>Before ({ndviResult.before_period?.from.slice(0, 10)} to {ndviResult.before_period?.to.slice(0, 10)})</small>
+                  {ndviResult.before_image_url
+                    ? <img src={imageUrl(ndviResult.before_image_url)} alt="NDVI before" />
+                    : <div className="ndvi-img-missing">No scene available</div>}
+                </div>
+                <div className="ndvi-img-wrap">
+                  <small>After ({ndviResult.after_period?.from.slice(0, 10)} to {ndviResult.after_period?.to.slice(0, 10)})</small>
+                  {ndviResult.after_image_url
+                    ? <img src={imageUrl(ndviResult.after_image_url)} alt="NDVI after" />
+                    : <div className="ndvi-img-missing">No scene available</div>}
+                </div>
+              </div>
             )}
             <p className="forecast-note">{ndviResult.note}</p>
             {ndviResult.cached && ndviResult.computed_at && (
