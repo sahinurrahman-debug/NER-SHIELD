@@ -49,7 +49,7 @@ export async function getAlerts() {
 export type InfraFeature = {
   type: "Feature";
   geometry: GeoJSON.Geometry;
-  properties: { id: number; kind: string; name: string; district: string | null; status: string | null };
+  properties: { id: number; kind: string; name: string; district: string | null; status: string | null; population: number | null };
 };
 
 export async function getInfrastructure() {
@@ -66,13 +66,13 @@ export async function getRoadStatus() {
 
 export type Priority = {
   cell_id: string; district: string; severity: string; risk_score: number;
-  nearby_infrastructure: number; priority_score: number;
+  nearby_infrastructure: number; population_at_risk: number; priority_score: number;
 };
 
 export async function getPriorities() {
   const response = await fetch(`${API}/api/v1/priorities`);
   if (!response.ok) throw new Error("Could not load priorities");
-  return response.json() as Promise<Priority[]>;
+  return response.json() as Promise<{ note: string; priorities: Priority[] }>;
 }
 
 export type ForecastPoint = { risk_score: number; severity: string; rain_24h_mm: number; source: string; created_at: string };

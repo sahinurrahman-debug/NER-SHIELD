@@ -131,6 +131,7 @@ class Infrastructure(Base):
     name: Mapped[str] = mapped_column(String(150))
     district: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # roads only
+    population: Mapped[int | None] = mapped_column(Integer, nullable=True)  # villages only; approximate, see seed data
     geom: Mapped[object] = mapped_column(Geometry(geometry_type="GEOMETRY", srid=4326, spatial_index=True))
 
 
@@ -449,6 +450,19 @@ def raise_alert(
     return alert
 
 
+def population_near(db: Session, latitude: float, longitude: float, radius_deg: float = 0.02) -> int:
+    """Sums named-village population within ~2km — an honest approximation from a small
+    seeded settlement list, not live census or gridded population data. Used to turn
+    'this alert affects 2 nearby buildings' into 'this alert affects an estimated 45,000
+    people', a substantially stronger signal for emergency-response prioritisation."""
+    result = db.execute(text("""
+        SELECT COALESCE(SUM(population), 0) AS total FROM infrastructure
+        WHERE kind = 'village' AND population IS NOT NULL
+          AND ST_DWithin(geom, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326), :radius)
+    """), {"lat": latitude, "lon": longitude, "radius": radius_deg}).scalar()
+    return int(result or 0)
+
+
 def upsert_risk_cell(
     db: Session, *, latitude: float, longitude: float, district: str | None,
     slope_deg: float, rain_24h_mm: float, soil_moisture_pct: float,
@@ -547,11 +561,14 @@ def run_monitor_tick() -> None:
             cell.risk_score = score_cell(cell.slope_deg, cell.rain_24h_mm, cell.soil_moisture_pct, cell.historical_density)
             cell.severity = severity_for(cell.risk_score)
             if cell.severity in ("high", "critical"):
+                lat, lon = centroids.get(cell.cell_id, (None, None))
+                pop = population_near(db, lat, lon) if lat is not None else 0
+                pop_note = f" Estimated {pop:,} people nearby." if pop > 0 else ""
                 raise_alert(
                     db, source_type="monitor", source_id=cell.cell_id, district=cell.district, severity=cell.severity,
                     message=localized_message(
                         cell.severity, cell.district,
-                        f"Live monitoring update ({'Open-Meteo' if live else 'simulated'}), current risk score {cell.risk_score}%.",
+                        f"Live monitoring update ({'Open-Meteo' if live else 'simulated'}), current risk score {cell.risk_score}%.{pop_note}",
                     ),
                 )
         db.commit()
@@ -594,18 +611,24 @@ def seed_infrastructure() -> None:
     with SessionLocal() as db:
         if db.query(Infrastructure).count() > 0:
             return
+        # population figures are rounded approximations for these named localities, not
+        # live census/gridded data — see /api/v1/priorities and alert messages for the
+        # honest caveat surfaced alongside any number derived from them.
         rows = [
-            ("road", "NH-6 Shillong Bypass", "East Khasi Hills", "restricted", "LINESTRING(91.870 25.570,91.880 25.578,91.892 25.588)"),
-            ("village", "Mawlai", "East Khasi Hills", None, "POINT(91.878 25.582)"),
-            ("village", "Nongthymmai", "East Khasi Hills", None, "POINT(91.887 25.579)"),
-            ("hospital", "Civil Hospital Shillong", "East Khasi Hills", None, "POINT(91.883 25.577)"),
+            ("road", "NH-6 Shillong Bypass", "East Khasi Hills", "restricted", None, "LINESTRING(91.870 25.570,91.880 25.578,91.892 25.588)"),
+            ("village", "Mawlai", "East Khasi Hills", None, 45000, "POINT(91.878 25.582)"),
+            ("village", "Nongthymmai", "East Khasi Hills", None, 20000, "POINT(91.887 25.579)"),
+            ("hospital", "Civil Hospital Shillong", "East Khasi Hills", None, None, "POINT(91.883 25.577)"),
         ]
         statement = text("""
-            INSERT INTO infrastructure (kind,name,district,status,geom)
-            VALUES (:kind,:name,:district,:status,ST_GeomFromText(:wkt,4326))
+            INSERT INTO infrastructure (kind,name,district,status,population,geom)
+            VALUES (:kind,:name,:district,:status,:population,ST_GeomFromText(:wkt,4326))
         """)
-        for kind, name, district, status, wkt in rows:
-            db.execute(statement, {"kind": kind, "name": name, "district": district, "status": status, "wkt": wkt})
+        for kind, name, district, status, population, wkt in rows:
+            db.execute(statement, {
+                "kind": kind, "name": name, "district": district, "status": status,
+                "population": population, "wkt": wkt,
+            })
         db.commit()
 
 
@@ -613,6 +636,13 @@ def seed_infrastructure() -> None:
 async def lifespan(_: FastAPI):
     global loaded_model, monitor_task, shap_explainer, shap_imputer
     Base.metadata.create_all(bind=engine)  # MVP only; use Alembic migrations before production.
+    # create_all() only creates missing tables, it never alters an existing one — this
+    # covers adding `population` to a database that already had `infrastructure` rows
+    # from before this column existed. Safe to run every startup (idempotent).
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE infrastructure ADD COLUMN IF NOT EXISTS population INTEGER"))
+        conn.execute(text("UPDATE infrastructure SET population = 45000 WHERE name = 'Mawlai' AND population IS NULL"))
+        conn.execute(text("UPDATE infrastructure SET population = 20000 WHERE name = 'Nongthymmai' AND population IS NULL"))
     if Path(MODEL_PATH).exists():
         candidate = joblib.load(MODEL_PATH)
         expected = list(getattr(candidate, "feature_names_in_", FEATURES))
@@ -698,7 +728,7 @@ def risk_cells(min_score: float = 0, db: Session = Depends(get_db)):
 @app.get("/api/v1/infrastructure")
 def infrastructure(db: Session = Depends(get_db)):
     rows = db.execute(text("""
-        SELECT id, kind, name, district, status, ST_AsGeoJSON(geom) AS geometry FROM infrastructure
+        SELECT id, kind, name, district, status, population, ST_AsGeoJSON(geom) AS geometry FROM infrastructure
     """)).mappings().all()
     return {
         "type": "FeatureCollection",
@@ -748,14 +778,20 @@ def priorities(db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT rc.cell_id, rc.district, rc.severity, rc.risk_score,
                COUNT(i.id) AS nearby_infrastructure,
-               ROUND((rc.risk_score * (1 + 0.2 * COUNT(i.id)))::numeric, 2) AS priority_score
+               COALESCE(SUM(i.population), 0)::int AS population_at_risk,
+               ROUND((
+                   rc.risk_score * (1 + 0.2 * COUNT(i.id) + 0.05 * COALESCE(SUM(i.population), 0) / 1000.0)
+               )::numeric, 2) AS priority_score
         FROM risk_cells rc
         LEFT JOIN infrastructure i ON ST_DWithin(rc.geom, i.geom, 0.02)
         GROUP BY rc.cell_id, rc.district, rc.severity, rc.risk_score
         ORDER BY priority_score DESC
         LIMIT 50
     """)).mappings().all()
-    return [dict(row) for row in rows]
+    return {
+        "note": "population_at_risk sums approximate named-settlement figures within ~2km, not live census or gridded population data.",
+        "priorities": [dict(row) for row in rows],
+    }
 
 
 @app.get("/api/v1/reports", response_model=list[ReportOut])
@@ -806,12 +842,14 @@ def create_report(payload: ReportCreate, db: Session = Depends(get_db)):
             slope_deg=0.0, rain_24h_mm=0.0, soil_moisture_pct=0.0, historical_density=0.3,
             risk_score=SEVERITY_MIDPOINT_SCORE[report.severity], severity=report.severity,
         )
+        pop = population_near(db, report.latitude, report.longitude)
+        pop_note = f" Estimated {pop:,} people nearby." if pop > 0 else ""
         raise_alert(
             db, source_type="field_report", source_id=str(report.id), district=report.district,
             severity=report.severity,
             message=localized_message(
                 report.severity, report.district,
-                f"{report.report_type.replace('_', ' ').title()} reported: {report.description[:120]}",
+                f"{report.report_type.replace('_', ' ').title()} reported: {report.description[:120]}{pop_note}",
             ),
         )
     return report
@@ -842,9 +880,15 @@ def prediction(payload: RiskFeatures, db: Session = Depends(get_db)):
             rain_24h_mm=_or_default(payload.Rainfall_mm, "Rainfall_mm"), source=source,
         ))
         db.commit()
+        pop_note = ""
+        if payload.latitude is not None and payload.longitude is not None:
+            pop = population_near(db, payload.latitude, payload.longitude)
+            pop_note = f" Estimated {pop:,} people nearby." if pop > 0 else ""
         alert = raise_alert(
             db, source_type="prediction", source_id=None, district=payload.district, severity=severity,
-            message=localized_message(severity, payload.district, f"Predicted risk {score}%. Factors: {', '.join(factors)}."),
+            message=localized_message(
+                severity, payload.district, f"Predicted risk {score}%. Factors: {', '.join(factors)}.{pop_note}"
+            ),
         )
         alert_triggered = alert is not None
 
