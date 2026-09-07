@@ -809,7 +809,14 @@ def _nearest_hospital_overpass(lat: float, lon: float, radius_km: float = 15.0) 
         f'way["amenity"="hospital"](around:{int(radius_km * 1000)},{lat},{lon}););out center 10;'
     )
     try:
-        response = httpx.post("https://overpass-api.de/api/interpreter", data={"data": query}, timeout=15)
+        # Overpass's public server 406s requests without a real Accept/User-Agent header (its
+        # fair-use policy also asks for an identifying User-Agent on shared-server requests).
+        response = httpx.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": query},
+            headers={"User-Agent": "NER-SHIELD/1.0 (landslide early-warning system; SIH 2026)", "Accept": "application/json"},
+            timeout=15,
+        )
         response.raise_for_status()
         best, best_dist = None, float("inf")
         for el in response.json().get("elements", []):
