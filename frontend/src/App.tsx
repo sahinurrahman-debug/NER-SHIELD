@@ -552,7 +552,7 @@ export default function App() {
                   Caution: route includes a partially blocked segment ({evacRoute.used_partial_block_roads.join(", ")}) — no clearer path was available.
                 </p>
               )}
-              <p className="forecast-note">{evacRoute.note}</p>
+
             </div>
           )}
         </div>
