@@ -110,3 +110,5 @@ header p { color: #94a3b8; }
   .shap-inputs { grid-template-columns: 1fr 1fr; }
   .shap-row { grid-template-columns: 110px 1fr 50px; }
 }
+
+.evac-result { margin-top: 10px; padding-top: 10px; border-top: 1px solid #334155; }

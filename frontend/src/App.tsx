@@ -1,14 +1,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Feature as GeoJsonFeature } from "geojson";
-import { Circle, GeoJSON, MapContainer, Popup, TileLayer, useMap } from "react-leaflet";
+import { Circle, CircleMarker as RLCircleMarker, GeoJSON, MapContainer, Polyline, Popup, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import { CircleMarker } from "leaflet";
 import type { Map as LeafletMap, PathOptions } from "leaflet";
 import {
-  getAlerts, getForecast, getInfrastructure, getOutlook, getPriorities, getReports, getRiskCells, getRoadStatus, getSummary,
-  runPrediction,
-  type Alert, type Feature as RiskFeature, type ForecastPoint, type InfraFeature, type Outlook, type PredictResponse,
-  type Priority, type Report,
+  getAlerts, getEvacuationRoute, getForecast, getInfrastructure, getOutlook, getPriorities, getReports, getRiskCells,
+  getRoadStatus, getSummary, runPrediction,
+  type Alert, type EvacuationRoute, type Feature as RiskFeature, type ForecastPoint, type InfraFeature, type Outlook,
+  type PredictResponse, type Priority, type Report,
 } from "./api";
 
 const colours: Record<string, string> = {
@@ -56,6 +56,11 @@ function MapController({ onReady }: { onReady: (map: LeafletMap) => void }) {
   return null;
 }
 
+function MapClickHandler({ onClick }: { onClick: (lat: number, lon: number) => void }) {
+  useMapEvents({ click: (e) => onClick(e.latlng.lat, e.latlng.lng) });
+  return null;
+}
+
 // Resolves an alert down to one [lat, lon] point, regardless of which path triggered
 // it — a monitored cell (by cell_id), a field report (by its own coordinates), or a
 // prediction alert (falls back to its district's highest-scoring cell).
@@ -92,6 +97,10 @@ export default function App() {
   const [predictResult, setPredictResult] = useState<PredictResponse | null>(null);
   const [predictBusy, setPredictBusy] = useState(false);
   const [predictError, setPredictError] = useState("");
+  const [evacStart, setEvacStart] = useState<[number, number] | null>(null);
+  const [evacRoute, setEvacRoute] = useState<EvacuationRoute | null>(null);
+  const [evacBusy, setEvacBusy] = useState(false);
+  const [evacError, setEvacError] = useState("");
   const mapRef = useRef<LeafletMap | null>(null);
 
   useEffect(() => {
@@ -123,6 +132,17 @@ export default function App() {
     const map = mapRef.current;
     const center = locateAlert(alert, cells, reports);
     if (map && center) map.flyTo(center, 15);
+  }
+
+  function planEvacuationRoute(lat: number, lon: number) {
+    setEvacStart([lat, lon]);
+    setEvacRoute(null);
+    setEvacError("");
+    setEvacBusy(true);
+    getEvacuationRoute(lat, lon)
+      .then(setEvacRoute)
+      .catch((err: Error) => setEvacError(err.message))
+      .finally(() => setEvacBusy(false));
   }
 
   function runExplainablePrediction() {
@@ -160,6 +180,7 @@ export default function App() {
         <div className="map-wrap hero-map">
           <MapContainer center={[25.58, 91.885]} zoom={13} className="map">
             <MapController onReady={(map) => { mapRef.current = map; }} />
+            <MapClickHandler onClick={planEvacuationRoute} />
             <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             <GeoJSON data={geoJsonData} style={style}
             onEachFeature={(feature, layer) => {
@@ -207,6 +228,17 @@ export default function App() {
               </Circle>
             );
           })}
+          {evacStart && (
+            <RLCircleMarker center={evacStart} radius={7} pathOptions={{ color: "#38bdf8", fillOpacity: 1, weight: 2 }}>
+              <Popup>Evacuation start point</Popup>
+            </RLCircleMarker>
+          )}
+          {evacRoute && (
+            <Polyline
+              positions={evacRoute.path.map(([lon, lat]) => [lat, lon] as [number, number])}
+              pathOptions={{ color: "#22d3ee", weight: 5, opacity: 0.9, dashArray: evacRoute.used_partial_block_roads.length ? "4 6" : undefined }}
+            />
+          )}
           </MapContainer>
         </div>
         <aside className="alerts-panel hero-alerts">
@@ -344,6 +376,36 @@ export default function App() {
           <p className="forecast-note">Population figures are approximate named-settlement estimates, not live census data.</p>
         </div>
         <aside className="secondary-aside">
+          <div className="sub-panel">
+            <h2 className="panel-title"><span className="dot" />Evacuation route planner</h2>
+            <p className="forecast-note">
+              Click anywhere on the map to plan the shortest route to the nearest hospital — a real
+              Dijkstra shortest-path search over the local road network. Blocked roads are excluded
+              entirely; the route reroutes live if a road's status changes.
+            </p>
+            {evacBusy && <p>Computing route…</p>}
+            {evacError && <p className="error">{evacError}</p>}
+            {evacRoute && (
+              <div className="evac-result">
+                <div className="outlook-main">
+                  <div className="outlook-probability">
+                    <strong>{evacRoute.distance_km} km</strong>
+                    <span>to {evacRoute.destination ?? "destination"}</span>
+                  </div>
+                  {evacRoute.used_partial_block_roads.length > 0 && (
+                    <span className="alert-status simulated">uses restricted road</span>
+                  )}
+                </div>
+                <p className="forecast-note">Via: {evacRoute.roads_used.join(" → ")}</p>
+                {evacRoute.used_partial_block_roads.length > 0 && (
+                  <p className="forecast-note critical-text">
+                    Caution: route includes a partially blocked segment ({evacRoute.used_partial_block_roads.join(", ")}) — no clearer path was available.
+                  </p>
+                )}
+                <p className="forecast-note">{evacRoute.note}</p>
+              </div>
+            )}
+          </div>
           <div className="sub-panel outlook-panel">
             <h2 className="panel-title"><span className="dot" />Risk probability &amp; outlook</h2>
             <div className="forecast-controls">

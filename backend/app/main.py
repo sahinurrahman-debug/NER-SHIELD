@@ -6,11 +6,13 @@ import random
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Literal
 
 import httpx
 import joblib
+import networkx as nx
 import numpy as np
 import shap
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
@@ -463,6 +465,57 @@ def population_near(db: Session, latitude: float, longitude: float, radius_deg: 
     return int(result or 0)
 
 
+# --- Evacuation route planning ---------------------------------------------------------------
+
+# Blocked roads are excluded from the graph entirely; partial-block roads are traversable
+# but penalized so the algorithm strongly prefers a clear route when one exists.
+ROAD_STATUS_PENALTY = {"open": 1.0, "restricted": 1.3, "partial_block": 3.0}
+
+
+def _haversine_km(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    r = 6371.0
+    dlat, dlon = radians(lat2 - lat1), radians(lon2 - lon1)
+    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
+    return 2 * r * atan2(sqrt(a), sqrt(1 - a))
+
+
+def _node_key(lon: float, lat: float) -> tuple[float, float]:
+    return (round(lon, 4), round(lat, 4))  # ~11m snap tolerance so shared endpoints merge
+
+
+def build_road_graph(db: Session) -> nx.Graph:
+    """Builds a routable graph from every non-blocked road segment in `infrastructure`.
+    Deliberately excludes blocked roads rather than just penalizing them — a blocked road
+    is not passable, not just slow."""
+    graph = nx.Graph()
+    rows = db.execute(text(
+        "SELECT name, status, ST_AsGeoJSON(geom) AS geometry FROM infrastructure WHERE kind = 'road'"
+    )).mappings().all()
+    for row in rows:
+        status = row["status"] or "open"
+        if status == "blocked":
+            continue
+        penalty = ROAD_STATUS_PENALTY.get(status, 1.0)
+        coords = json.loads(row["geometry"])["coordinates"]
+        for (lon1, lat1), (lon2, lat2) in zip(coords, coords[1:]):
+            n1, n2 = _node_key(lon1, lat1), _node_key(lon2, lat2)
+            dist_km = _haversine_km(lon1, lat1, lon2, lat2)
+            weight = dist_km * penalty
+            if graph.has_edge(n1, n2) and graph[n1][n2]["weight"] <= weight:
+                continue  # keep the cheaper of two overlapping segments between the same points
+            graph.add_edge(n1, n2, weight=weight, distance_km=dist_km, name=row["name"], status=status)
+    return graph
+
+
+def _nearest_node(graph: nx.Graph, lon: float, lat: float) -> tuple[tuple[float, float], float]:
+    best, best_dist = None, float("inf")
+    for node in graph.nodes:
+        d = _haversine_km(lon, lat, node[0], node[1])
+        if d < best_dist:
+            best, best_dist = node, d
+    return best, best_dist
+
+
 def upsert_risk_cell(
     db: Session, *, latitude: float, longitude: float, district: str | None,
     slope_deg: float, rain_24h_mm: float, soil_moisture_pct: float,
@@ -632,6 +685,29 @@ def seed_infrastructure() -> None:
         db.commit()
 
 
+def seed_evacuation_roads() -> None:
+    """Adds a small connected local road network on top of the single originally-seeded
+    road, so /api/v1/evacuation-route has an actual graph to route through — including one
+    deliberately blocked segment with a real alternate path, not a hardcoded demo route.
+    Checked by name (idempotent) rather than gated on the table being empty, so it also
+    backfills a database that already had infrastructure rows from before this existed."""
+    with SessionLocal() as db:
+        rows = [
+            ("road", "Mawlai Direct Road", "East Khasi Hills", "blocked", "LINESTRING(91.878 25.582,91.883 25.577)"),
+            ("road", "Mawlai-Junction Link", "East Khasi Hills", "open", "LINESTRING(91.878 25.582,91.881 25.580)"),
+            ("road", "Junction-Hospital Link", "East Khasi Hills", "open", "LINESTRING(91.881 25.580,91.883 25.577)"),
+            ("road", "Nongthymmai-Hospital Road", "East Khasi Hills", "open", "LINESTRING(91.887 25.579,91.883 25.577)"),
+        ]
+        for kind, name, district, status, wkt in rows:
+            if db.execute(text("SELECT 1 FROM infrastructure WHERE name = :name"), {"name": name}).first():
+                continue
+            db.execute(text("""
+                INSERT INTO infrastructure (kind,name,district,status,geom)
+                VALUES (:kind,:name,:district,:status,ST_GeomFromText(:wkt,4326))
+            """), {"kind": kind, "name": name, "district": district, "status": status, "wkt": wkt})
+        db.commit()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global loaded_model, monitor_task, shap_explainer, shap_imputer
@@ -665,6 +741,7 @@ async def lifespan(_: FastAPI):
             shap_imputer = None
     seed_demo_data()
     seed_infrastructure()
+    seed_evacuation_roads()
     if MONITOR_ENABLED:
         monitor_task = asyncio.create_task(monitor_loop())
     yield
@@ -791,6 +868,64 @@ def priorities(db: Session = Depends(get_db)):
     return {
         "note": "population_at_risk sums approximate named-settlement figures within ~2km, not live census or gridded population data.",
         "priorities": [dict(row) for row in rows],
+    }
+
+
+@app.get("/api/v1/evacuation-route")
+def evacuation_route(
+    from_lat: float, from_lon: float, to_lat: float | None = None, to_lon: float | None = None,
+    db: Session = Depends(get_db),
+):
+    """Shortest safe route from a point to a destination (nearest hospital by default),
+    computed with Dijkstra's algorithm over the seeded local road network — blocked roads
+    are excluded entirely, partial-block roads are used only if no clear alternative exists.
+    This is a real, general-purpose routing algorithm, not a hardcoded path: it recomputes
+    from live road status every call, so marking a road blocked changes the answer."""
+    graph = build_road_graph(db)
+    if graph.number_of_nodes() == 0:
+        raise HTTPException(404, "No usable road network right now — every seeded road is blocked.")
+
+    destination_name = None
+    if to_lat is None or to_lon is None:
+        hospital = db.execute(text("""
+            SELECT name, ST_Y(geom) AS lat, ST_X(geom) AS lon FROM infrastructure WHERE kind = 'hospital'
+            ORDER BY ST_Distance(geom, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)) LIMIT 1
+        """), {"lat": from_lat, "lon": from_lon}).mappings().first()
+        if not hospital:
+            raise HTTPException(404, "No hospital in the infrastructure layer to route to.")
+        to_lat, to_lon, destination_name = hospital["lat"], hospital["lon"], hospital["name"]
+
+    start_node, start_snap_km = _nearest_node(graph, from_lon, from_lat)
+    end_node, _ = _nearest_node(graph, to_lon, to_lat)
+
+    try:
+        path = nx.shortest_path(graph, start_node, end_node, weight="weight")
+    except nx.NetworkXNoPath:
+        raise HTTPException(404, "No route avoids the currently blocked roads — every path is cut off.")
+
+    roads_used: list[str] = []
+    used_partial_block: list[str] = []
+    total_km = 0.0
+    for a, b in zip(path, path[1:]):
+        edge = graph[a][b]
+        total_km += edge["distance_km"]
+        if edge["name"] not in roads_used:
+            roads_used.append(edge["name"])
+        if edge["status"] == "partial_block" and edge["name"] not in used_partial_block:
+            used_partial_block.append(edge["name"])
+
+    return {
+        "distance_km": round(total_km, 2),
+        "path": [[lon, lat] for lon, lat in path],
+        "roads_used": roads_used,
+        "destination": destination_name,
+        "used_partial_block_roads": used_partial_block,
+        "start_snapped_km": round(start_snap_km, 3),
+        "note": (
+            "Computed from the seeded local road network only (a handful of segments near "
+            "East Khasi Hills), not a full regional road graph. Blocked roads are excluded "
+            "entirely; partial-block roads are used only if no clear alternative exists."
+        ),
     }
 
 

@@ -111,3 +111,17 @@ export async function runPrediction(input: Record<string, number | string | null
   if (!response.ok) throw new Error("Prediction failed — check inputs");
   return response.json() as Promise<PredictResponse>;
 }
+
+export type EvacuationRoute = {
+  distance_km: number; path: [number, number][]; roads_used: string[];
+  destination: string | null; used_partial_block_roads: string[]; start_snapped_km: number; note: string;
+};
+
+export async function getEvacuationRoute(fromLat: number, fromLon: number) {
+  const response = await fetch(`${API}/api/v1/evacuation-route?from_lat=${fromLat}&from_lon=${fromLon}`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}) as { detail?: string });
+    throw new Error(body.detail || "Could not compute an evacuation route");
+  }
+  return response.json() as Promise<EvacuationRoute>;
+}
