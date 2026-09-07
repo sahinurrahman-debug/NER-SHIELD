@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+import socket
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,22 @@ from geoalchemy2 import Geometry
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import DateTime, Float, Integer, String, Text, create_engine, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+# Render's container network has no IPv6 route — confirmed live via a ConnectError
+# ("Network is unreachable") calling Overpass, whose host publishes both an A and an AAAA
+# record. Every outbound integration in this file (Open-Meteo, Textbee, RockBLOCK, Sentinel
+# Hub, Overpass, OSRM) resolves to a host with an IPv6 address too, so any of them could hit
+# this same failure depending on which address the resolver tries first — this isn't specific
+# to Overpass. Forcing IPv4-only DNS resolution process-wide fixes it for every current and
+# future outbound call in one place, instead of special-casing each integration.
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+
+socket.getaddrinfo = _ipv4_only_getaddrinfo
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 MODEL_PATH = os.getenv("MODEL_PATH", "/app/models/risk_model.joblib")
