@@ -38,7 +38,7 @@ export async function getReports() {
 export type Alert = {
   id: number; source_type: string; source_id: string | null; district: string | null;
   severity: string; message: string; channel: string; recipients: string | null;
-  status: string; created_at: string;
+  status: string; satellite_status: string | null; satellite_note: string | null; created_at: string;
 };
 
 export async function getAlerts() {

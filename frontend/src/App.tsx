@@ -260,6 +260,12 @@ export default function App() {
         </div>
         <aside className="alerts-panel hero-alerts">
           <h2 className="panel-title"><span className="dot" />Recent alerts</h2>
+          <p className="forecast-note">
+            SMS is the primary channel; when it can't confirm real delivery — the exact scenario
+            where a landslide has taken out both the cell tower and local internet — a satellite
+            fallback (🛰) is attempted over Iridium to relay modems at village/relay points, so
+            critical alerts can still get through with zero terrestrial network.
+          </p>
           {alerts.length === 0 && <p>No alerts triggered yet.</p>}
           {alerts.map((alert) => (
             <article
@@ -272,6 +278,14 @@ export default function App() {
               <div>
                 <b>{alert.severity.toUpperCase()} · {alert.district ?? "Unknown location"}</b>
                 <p>{alert.message}</p>
+                {alert.satellite_status && (
+                  <span
+                    className={`alert-status satellite-status satellite-${alert.satellite_status}`}
+                    title={alert.satellite_note ?? ""}
+                  >
+                    🛰 satellite: {alert.satellite_status.replace("_", " ")}
+                  </span>
+                )}
               </div>
             </article>
           ))}

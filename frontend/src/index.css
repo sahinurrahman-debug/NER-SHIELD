@@ -31,6 +31,10 @@ header p { color: #94a3b8; }
 .alert-status.simulated { background: #713f12; color: #fde68a; }
 .alert-status.failed { background: #7f1d1d; color: #fca5a5; }
 .alert-status.no_recipients { background: #334155; color: #cbd5e1; }
+.satellite-status { display: inline-block; margin-top: 6px; }
+.satellite-status.satellite-sent { background: #0c4a6e; color: #7dd3fc; }
+.satellite-status.satellite-failed { background: #7f1d1d; color: #fca5a5; }
+.satellite-status.satellite-not_configured { background: #334155; color: #94a3b8; }
 
 /* --- Stat strip: severity + road connectivity, right below the hero --- */
 .stat-strip { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 26px 0; }

@@ -41,6 +41,14 @@ ALERT_SMS_RECIPIENTS = [x.strip() for x in os.getenv("ALERT_SMS_RECIPIENTS", "")
 ALERT_SEVERITY_THRESHOLD = os.getenv("ALERT_SEVERITY_THRESHOLD", "high")
 ALERT_COOLDOWN_MINUTES = int(os.getenv("ALERT_COOLDOWN_MINUTES", "15"))
 ALERT_LANGUAGES = [x.strip() for x in os.getenv("ALERT_LANGUAGES", "en,hi,as,bn").split(",") if x.strip()]
+
+# Optional: Iridium satellite fallback (see send_satellite()) for when SMS genuinely can't get
+# through — e.g. a landslide has taken down both the local cell tower and the internet. Delivers
+# to registered satellite modems (Rock7 RockBLOCK / Iridium SBD) at village or relay points, not
+# to citizens' own phone numbers — satellite IoT hardware, not a general SMS-to-any-phone gateway.
+ROCKBLOCK_IMEIS = [x.strip() for x in os.getenv("ROCKBLOCK_IMEI", "").split(",") if x.strip()]
+ROCKBLOCK_USERNAME = os.getenv("ROCKBLOCK_USERNAME")
+ROCKBLOCK_PASSWORD = os.getenv("ROCKBLOCK_PASSWORD")
 SEVERITY_ORDER = ["low", "moderate", "high", "critical"]
 # Representative risk_score for a severity band, used when a field report (which carries
 # no raw sensor readings) needs to place/update a risk cell on the map.
@@ -133,6 +141,10 @@ class Alert(Base):
     channel: Mapped[str] = mapped_column(String(16), default="sms")
     recipients: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(16), index=True)  # "sent" | "simulated" | "failed" | "no_recipients"
+    # Satellite fallback (see send_satellite()) — only attempted when the SMS channel above
+    # didn't confirm real delivery. None means it was never attempted (SMS itself succeeded).
+    satellite_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    satellite_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -259,6 +271,8 @@ class AlertOut(BaseModel):
     channel: str
     recipients: str | None
     status: str
+    satellite_status: str | None = None
+    satellite_note: str | None = None
     created_at: datetime
 
 
@@ -459,6 +473,48 @@ def send_sms(to: str, body: str) -> str:
         return "failed"
 
 
+def send_satellite(message: str) -> tuple[str, str]:
+    """Fallback delivery over Iridium satellite (Rock7's RockBLOCK Core API) when SMS didn't
+    confirm real delivery — the one channel that keeps working when a landslide has taken out
+    both the local cell tower and the internet. Delivers to registered satellite modems at
+    village/relay points (ROCKBLOCK_IMEI), not to arbitrary citizen phone numbers — that's a
+    real hardware constraint of satellite IoT messaging, not a simplification. Never raises;
+    returns ("not_configured", ...) when no modem is registered, so this stays honest rather
+    than pretending to deliver messages with no relay hardware in the field."""
+    if not (ROCKBLOCK_IMEIS and ROCKBLOCK_USERNAME and ROCKBLOCK_PASSWORD):
+        return "not_configured", (
+            "No satellite relay modem registered on this deployment (ROCKBLOCK_IMEI / "
+            "ROCKBLOCK_USERNAME / ROCKBLOCK_PASSWORD unset) — set these once a physical "
+            "Iridium RockBLOCK modem is deployed at a village or relay point."
+        )
+    # Iridium SBD messages are capped at 340 bytes; truncate defensively rather than fail outright.
+    payload_hex = message[:320].encode("utf-8").hex()
+    results: list[str] = []
+    for imei in ROCKBLOCK_IMEIS:
+        try:
+            response = httpx.post(
+                "https://rockblock.rock7.com/rockblock/MT",
+                data={"imei": imei, "username": ROCKBLOCK_USERNAME, "password": ROCKBLOCK_PASSWORD, "data": payload_hex},
+                timeout=15,
+            )
+            body = response.text.strip()  # Rock7 replies "OK,<messageId>" or "FAILED,<code>,<reason>"
+            if body.startswith("OK"):
+                results.append("sent")
+            else:
+                results.append("failed")
+                logger.error("RockBLOCK MT to %s failed: %s", imei, body)
+        except httpx.HTTPError as exc:
+            results.append("failed")
+            logger.error("RockBLOCK MT to %s raised an exception: %s", imei, exc)
+    if "sent" in results:
+        return "sent", (
+            f"Queued for Iridium satellite delivery to {len(ROCKBLOCK_IMEIS)} relay modem(s) — "
+            "typically arrives within minutes on the modem's next satellite pass, independent of "
+            "any local cellular or Wi-Fi network."
+        )
+    return "failed", "Satellite delivery attempt failed for all registered modems — see server logs."
+
+
 def raise_alert(
     db: Session, *, source_type: str, source_id: str | None, district: str | None, severity: str, message: str
 ) -> Alert | None:
@@ -477,9 +533,17 @@ def raise_alert(
     else:
         results = [send_sms(to, message) for to in ALERT_SMS_RECIPIENTS]
         status = "sent" if "sent" in results else ("simulated" if "simulated" in results else "failed")
+
+    # Satellite is a *fallback*: only attempted once SMS has failed to confirm real delivery,
+    # so a healthy SMS channel never pays the extra latency/cost of a redundant satellite send.
+    satellite_status, satellite_note = (None, None)
+    if status != "sent":
+        satellite_status, satellite_note = send_satellite(message)
+
     alert = Alert(
         source_type=source_type, source_id=source_id, district=district, severity=severity,
         message=message, channel="sms", recipients=",".join(ALERT_SMS_RECIPIENTS) or None, status=status,
+        satellite_status=satellite_status, satellite_note=satellite_note,
     )
     db.add(alert)
     db.commit()
@@ -1123,6 +1187,8 @@ async def lifespan(_: FastAPI):
         conn.execute(text("UPDATE infrastructure SET population = 20000 WHERE name = 'Nongthymmai' AND population IS NULL"))
         conn.execute(text("ALTER TABLE field_reports ADD COLUMN IF NOT EXISTS trust_score INTEGER"))
         conn.execute(text("ALTER TABLE field_reports ADD COLUMN IF NOT EXISTS trust_flags TEXT"))
+        conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS satellite_status VARCHAR(16)"))
+        conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS satellite_note TEXT"))
     if Path(MODEL_PATH).exists():
         candidate = joblib.load(MODEL_PATH)
         expected = list(getattr(candidate, "feature_names_in_", FEATURES))
