@@ -5,10 +5,10 @@ import { Circle, CircleMarker as RLCircleMarker, GeoJSON, MapContainer, Polyline
 import { CircleMarker } from "leaflet";
 import type { Map as LeafletMap, PathOptions } from "leaflet";
 import {
-  getAlerts, getEvacuationRoute, getForecast, getInfrastructure, getOutlook, getPriorities, getReports, getRiskCells,
-  getRoadStatus, getSummary, runPrediction,
-  type Alert, type EvacuationRoute, type Feature as RiskFeature, type ForecastPoint, type InfraFeature, type Outlook,
-  type PredictResponse, type Priority, type Report,
+  getAlerts, getEvacuationRoute, getForecast, getInfrastructure, getNdviChange, getOutlook, getPriorities, getReports,
+  getRiskCells, getRoadStatus, getSummary, imageUrl, runPrediction,
+  type Alert, type EvacuationRoute, type Feature as RiskFeature, type ForecastPoint, type InfraFeature, type NdviChange,
+  type Outlook, type PredictResponse, type Priority, type Report,
 } from "./api";
 
 const colours: Record<string, string> = {
@@ -101,6 +101,10 @@ export default function App() {
   const [evacRoute, setEvacRoute] = useState<EvacuationRoute | null>(null);
   const [evacBusy, setEvacBusy] = useState(false);
   const [evacError, setEvacError] = useState("");
+  const [ndviCellId, setNdviCellId] = useState("");
+  const [ndviResult, setNdviResult] = useState<NdviChange | null>(null);
+  const [ndviBusy, setNdviBusy] = useState(false);
+  const [ndviError, setNdviError] = useState("");
   const mapRef = useRef<LeafletMap | null>(null);
 
   useEffect(() => {
@@ -114,6 +118,9 @@ export default function App() {
         setInfra(infraResponse.features);
         setRoadCounts(roadStatusResponse);
         setPriorities(prioritiesResponse.priorities);
+        if (cellsResponse.features.length > 0) {
+          setNdviCellId((cellsResponse.features[0] as RiskFeature).properties.cell_id);
+        }
       })
       .catch((err: Error) => setError(err.message));
     getOutlook("East Khasi Hills").then(setOutlook).catch(() => {});
@@ -143,6 +150,16 @@ export default function App() {
       .then(setEvacRoute)
       .catch((err: Error) => setEvacError(err.message))
       .finally(() => setEvacBusy(false));
+  }
+
+  function loadNdviChange(forceRefresh = false) {
+    if (!ndviCellId) return;
+    setNdviBusy(true);
+    setNdviError("");
+    getNdviChange(ndviCellId, forceRefresh)
+      .then(setNdviResult)
+      .catch((err: Error) => setNdviError(err.message))
+      .finally(() => setNdviBusy(false));
   }
 
   function runExplainablePrediction() {
@@ -354,6 +371,71 @@ export default function App() {
             )}
           </div>
         )}
+      </section>
+
+      <section className="sub-panel ndvi-panel">
+        <h2 className="panel-title"><span className="dot" />Satellite vegetation change — real Sentinel-2 NDVI</h2>
+        <p className="forecast-note">
+          Real Sentinel-2 L2A satellite imagery pulled live from Sentinel Hub — not a proxy input — comparing
+          this risk cell's vegetation cover now against the same season one year ago. Deforestation is a leading
+          landslide indicator: it strips the root cohesion that holds slope soil in place.
+        </p>
+        <div className="forecast-controls">
+          <select value={ndviCellId} onChange={(e) => setNdviCellId(e.target.value)}>
+            {Array.from(new Set(cells.map((c) => c.properties.cell_id))).map((id) => {
+              const cell = cells.find((c) => c.properties.cell_id === id);
+              return <option key={id} value={id}>{id}{cell ? ` · ${cell.properties.district}` : ""}</option>;
+            })}
+          </select>
+          <button onClick={() => loadNdviChange(false)} disabled={ndviBusy || !ndviCellId}>
+            {ndviBusy ? "Analyzing…" : "Analyze vegetation change"}
+          </button>
+        </div>
+        {ndviError && <p className="error">{ndviError}</p>}
+        {ndviResult && (
+          <div className="ndvi-result">
+            {ndviResult.mean_ndvi_before !== null && ndviResult.mean_ndvi_after !== null && (
+              <>
+                <div className="outlook-main">
+                  <div className="outlook-probability">
+                    <strong>{ndviResult.ndvi_delta! >= 0 ? "+" : ""}{ndviResult.ndvi_delta}</strong>
+                    <span>NDVI change · before {ndviResult.mean_ndvi_before} → after {ndviResult.mean_ndvi_after}</span>
+                  </div>
+                  <span className={`alert-status severity-badge ndvi-${ndviResult.severity.replace(/ /g, "-")}`}>
+                    {ndviResult.severity}
+                  </span>
+                </div>
+                {ndviResult.vegetation_loss_pct !== null && ndviResult.vegetation_loss_pct > 0 && (
+                  <p className="forecast-note">Estimated vegetation loss: <b>{ndviResult.vegetation_loss_pct}%</b></p>
+                )}
+                {(ndviResult.before_image_url || ndviResult.after_image_url) && (
+                  <div className="ndvi-images">
+                    <div className="ndvi-img-wrap">
+                      <small>Before ({ndviResult.before_period?.from.slice(0, 10)} to {ndviResult.before_period?.to.slice(0, 10)})</small>
+                      {ndviResult.before_image_url
+                        ? <img src={imageUrl(ndviResult.before_image_url)} alt="NDVI before" />
+                        : <div className="ndvi-img-missing">No cloud-free scene available</div>}
+                    </div>
+                    <div className="ndvi-img-wrap">
+                      <small>After ({ndviResult.after_period?.from.slice(0, 10)} to {ndviResult.after_period?.to.slice(0, 10)})</small>
+                      {ndviResult.after_image_url
+                        ? <img src={imageUrl(ndviResult.after_image_url)} alt="NDVI after" />
+                        : <div className="ndvi-img-missing">No cloud-free scene available</div>}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+            <p className="forecast-note">{ndviResult.note}</p>
+            {ndviResult.cached && ndviResult.computed_at && (
+              <p className="forecast-note">
+                Cached from {new Date(ndviResult.computed_at).toLocaleString()} —{" "}
+                <button className="link-button" onClick={() => loadNdviChange(true)} disabled={ndviBusy}>refresh now</button>
+              </p>
+            )}
+          </div>
+        )}
+        {!ndviResult && !ndviBusy && <p>Pick a risk cell and click Analyze to pull real Sentinel-2 imagery for it.</p>}
       </section>
 
       <section className="layout">

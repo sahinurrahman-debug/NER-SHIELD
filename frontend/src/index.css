@@ -120,3 +120,24 @@ header p { color: #94a3b8; }
 .trust-badge.trust-medium { background: #713f12; color: #fde68a; }
 .trust-badge.trust-low { background: #7f1d1d; color: #fca5a5; }
 .trust-flags { color: #64748b; font-size: 0.78rem; }
+
+/* --- Satellite NDVI vegetation-change panel --- */
+.ndvi-panel { max-height: none; margin-bottom: 16px; }
+.ndvi-panel .forecast-controls select { flex: 1; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 8px; padding: 9px; }
+.ndvi-panel .forecast-controls button { background: linear-gradient(135deg, #f59e0b, #d97706); border: none; border-radius: 8px; padding: 9px 16px; font-weight: 700; cursor: pointer; color: #111827; white-space: nowrap; }
+.ndvi-panel .forecast-controls button:disabled { opacity: 0.6; cursor: default; }
+.ndvi-result { margin-top: 14px; }
+.severity-badge.ndvi-significant-vegetation-loss { background: #7f1d1d; color: #fca5a5; }
+.severity-badge.ndvi-moderate-vegetation-loss { background: #7c2d12; color: #fdba74; }
+.severity-badge.ndvi-stable { background: #334155; color: #cbd5e1; }
+.severity-badge.ndvi-vegetation-gain { background: #14532d; color: #86efac; }
+.ndvi-images { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 14px 0; }
+.ndvi-img-wrap small { display: block; color: #94a3b8; margin-bottom: 6px; }
+.ndvi-img-wrap img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; border: 1px solid #334155; image-rendering: pixelated; }
+.ndvi-img-missing { aspect-ratio: 1; border-radius: 8px; border: 1px dashed #334155; display: flex; align-items: center; justify-content: center; color: #64748b; font-size: 0.8rem; text-align: center; padding: 10px; }
+.link-button { background: none; border: none; color: #fbbf24; font-weight: 700; cursor: pointer; padding: 0; font-size: inherit; text-decoration: underline; }
+.link-button:disabled { opacity: 0.6; cursor: default; }
+
+@media (max-width: 900px) {
+  .ndvi-images { grid-template-columns: 1fr; }
+}

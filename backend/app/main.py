@@ -46,6 +46,13 @@ SEVERITY_ORDER = ["low", "moderate", "high", "critical"]
 # no raw sensor readings) needs to place/update a risk cell on the map.
 SEVERITY_MIDPOINT_SCORE = {"low": 15.0, "moderate": 40.0, "high": 65.0, "critical": 90.0}
 
+# Optional: real Sentinel-2 NDVI vegetation-change detection (see fetch_ndvi_change()).
+# Free trial at https://www.sentinel-hub.com/ — unset means the feature returns an honest
+# "not configured" response instead of faking satellite data.
+SENTINELHUB_CLIENT_ID = os.getenv("SENTINELHUB_CLIENT_ID")
+SENTINELHUB_CLIENT_SECRET = os.getenv("SENTINELHUB_CLIENT_SECRET")
+NDVI_CACHE_DAYS = int(os.getenv("NDVI_CACHE_DAYS", "7"))
+
 # Real-time monitoring loop (see run_monitor_tick). Pulls live rainfall/soil-moisture from
 # Open-Meteo (free, keyless) per risk cell; falls back to a random walk if that call fails
 # or WEATHER_PROVIDER=simulated. Swap in IMD's feed here once institutional access exists.
@@ -149,6 +156,29 @@ class PredictionLog(Base):
     rain_24h_mm: Mapped[float] = mapped_column(Float, default=0)
     source: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NdviReading(Base):
+    """One cached satellite vegetation-change result per risk cell — see fetch_ndvi_change()."""
+    __tablename__ = "ndvi_readings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cell_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    district: Mapped[str] = mapped_column(String(100))
+    before_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    before_to: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    after_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    after_to: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    mean_ndvi_before: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mean_ndvi_after: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ndvi_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    vegetation_loss_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    severity: Mapped[str] = mapped_column(String(32), default="unavailable")
+    before_image_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    after_image_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    note: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class RiskFeatures(BaseModel):
@@ -630,6 +660,278 @@ def upsert_risk_cell(
     return cell_id
 
 
+# --- Satellite NDVI change detection (real Sentinel-2 imagery via Sentinel Hub) ---------------
+# Deforestation strips root-cohesion soil stability and is a recognised leading indicator of
+# landslide risk — this pulls real Sentinel-2 L2A reflectance (not a placeholder image or a
+# hand-tuned "Vegetation_Cover" input) for a risk cell's footprint, compares a recent 90-day
+# window against the same season one year earlier, and reports the change in mean NDVI plus a
+# colour-ramped before/after image pair. Runs on demand (not in the monitor loop) to stay
+# within Sentinel Hub's free-tier processing-unit budget.
+NDVI_DIR = Path(UPLOAD_DIR) / "ndvi"
+NDVI_DIR.mkdir(parents=True, exist_ok=True)
+
+_sh_token_cache: dict[str, float | str] = {}
+
+# Statistical API: per-pixel NDVI, cloud/shadow/snow masked via the scene classification (SCL)
+# band. The "dataMask" output is special-cased by Sentinel Hub — pixels where it's 0 are
+# excluded from the aggregated stats, so cloudy/invalid pixels never pollute the mean.
+_NDVI_EVALSCRIPT_STATS = """
+//VERSION=3
+function setup() {
+  return {
+    input: [{ bands: ["B04", "B08", "SCL", "dataMask"] }],
+    output: [{ id: "ndvi", bands: 1 }, { id: "dataMask", bands: 1 }],
+  };
+}
+function evaluatePixel(s) {
+  var cloudLike = s.SCL == 3 || s.SCL == 8 || s.SCL == 9 || s.SCL == 10;
+  var valid = s.dataMask === 1 && !cloudLike;
+  var ndvi = (s.B08 - s.B04) / (s.B08 + s.B04 + 1e-6);
+  return { ndvi: [ndvi], dataMask: [valid ? 1 : 0] };
+}
+"""
+
+# Process API: a single true colour-ramped NDVI PNG (brown = bare/stressed, green = dense
+# vegetation) for the least-cloudy Sentinel-2 scene in the window — the visual before/after pair.
+_NDVI_EVALSCRIPT_IMAGE = """
+//VERSION=3
+function setup() {
+  return { input: [{ bands: ["B04", "B08", "dataMask"] }], output: { bands: 4 } };
+}
+function evaluatePixel(s) {
+  var ndvi = (s.B08 - s.B04) / (s.B08 + s.B04 + 1e-6);
+  var stops = [
+    [-1.0, [0.53, 0.35, 0.24]], [0.0, [0.80, 0.65, 0.45]], [0.2, [0.94, 0.86, 0.44]],
+    [0.4, [0.63, 0.79, 0.29]], [0.6, [0.20, 0.63, 0.17]], [1.0, [0.0, 0.30, 0.0]],
+  ];
+  var r = stops[0][1][0], g = stops[0][1][1], b = stops[0][1][2];
+  for (var i = 0; i < stops.length - 1; i++) {
+    if (ndvi >= stops[i][0] && ndvi <= stops[i + 1][0]) {
+      var t = (ndvi - stops[i][0]) / (stops[i + 1][0] - stops[i][0]);
+      r = stops[i][1][0] + t * (stops[i + 1][1][0] - stops[i][1][0]);
+      g = stops[i][1][1] + t * (stops[i + 1][1][1] - stops[i][1][1]);
+      b = stops[i][1][2] + t * (stops[i + 1][1][2] - stops[i][1][2]);
+      break;
+    }
+  }
+  return [r, g, b, s.dataMask];
+}
+"""
+
+
+def sentinelhub_token() -> str | None:
+    """OAuth2 client-credentials token, cached until ~1 minute before expiry. Never raises —
+    returns None if credentials aren't configured or the auth call fails, so callers can fall
+    back to an honest "not configured" response instead of a 500."""
+    if not (SENTINELHUB_CLIENT_ID and SENTINELHUB_CLIENT_SECRET):
+        return None
+    cached = _sh_token_cache.get("token")
+    if cached and float(_sh_token_cache.get("expires_at", 0)) > datetime.now(timezone.utc).timestamp():
+        return str(cached)
+    try:
+        response = httpx.post(
+            "https://services.sentinel-hub.com/oauth/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": SENTINELHUB_CLIENT_ID,
+                "client_secret": SENTINELHUB_CLIENT_SECRET,
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        body = response.json()
+        _sh_token_cache["token"] = body["access_token"]
+        _sh_token_cache["expires_at"] = datetime.now(timezone.utc).timestamp() + body["expires_in"] - 60
+        return str(body["access_token"])
+    except (httpx.HTTPError, KeyError, ValueError):
+        return None
+
+
+def _sh_mean_ndvi(token: str, bbox: list[float], date_from: datetime, date_to: datetime) -> float | None:
+    """Mean NDVI over the AOI+window from Sentinel Hub's Statistical API, which aggregates
+    every cloud-free Sentinel-2 L2A pixel captured in that window — real satellite reflectance,
+    not a synthetic value. Returns None if no cloud-free coverage exists (common in NER's
+    monsoon season) rather than guessing."""
+    try:
+        response = httpx.post(
+            "https://services.sentinel-hub.com/api/v1/statistics",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "input": {
+                    "bounds": {"bbox": bbox, "properties": {"crs": "http://www.opengis.net/def/crs/EPSG/0/4326"}},
+                    "data": [{"type": "sentinel-2-l2a"}],
+                },
+                "aggregation": {
+                    "timeRange": {
+                        "from": date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "to": date_to.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    },
+                    "aggregationInterval": {"of": f"P{max((date_to - date_from).days, 1)}D"},
+                    "evalscript": _NDVI_EVALSCRIPT_STATS,
+                    "resx": 10, "resy": 10,
+                },
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        total_weight, weighted_sum = 0.0, 0.0
+        for interval in response.json().get("data", []):
+            stats = interval.get("outputs", {}).get("ndvi", {}).get("bands", {}).get("B0", {}).get("stats")
+            if not stats:
+                continue
+            valid = stats.get("sampleCount", 0) - stats.get("noDataCount", 0)
+            if valid > 0 and stats.get("mean") is not None:
+                weighted_sum += stats["mean"] * valid
+                total_weight += valid
+        return weighted_sum / total_weight if total_weight > 0 else None
+    except (httpx.HTTPError, KeyError, ValueError, IndexError, ZeroDivisionError):
+        return None
+
+
+def _sh_ndvi_image(token: str, bbox: list[float], date_from: datetime, date_to: datetime, out_path: Path) -> bool:
+    """Saves a colour-ramped NDVI PNG for the least-cloudy Sentinel-2 scene in the window."""
+    try:
+        response = httpx.post(
+            "https://services.sentinel-hub.com/api/v1/process",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "input": {
+                    "bounds": {"bbox": bbox, "properties": {"crs": "http://www.opengis.net/def/crs/EPSG/0/4326"}},
+                    "data": [{
+                        "type": "sentinel-2-l2a",
+                        "dataFilter": {
+                            "timeRange": {
+                                "from": date_from.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "to": date_to.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            },
+                            "mosaickingOrder": "leastCC",
+                        },
+                    }],
+                },
+                "output": {"width": 256, "height": 256, "responses": [{"identifier": "default", "format": {"type": "image/png"}}]},
+                "evalscript": _NDVI_EVALSCRIPT_IMAGE,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        out_path.write_bytes(response.content)
+        return True
+    except httpx.HTTPError:
+        return False
+
+
+def _ndvi_reading_out(row: NdviReading, *, configured: bool, cached: bool) -> dict:
+    return {
+        "cell_id": row.cell_id, "district": row.district, "configured": configured,
+        "before_period": {"from": row.before_from.isoformat(), "to": row.before_to.isoformat()},
+        "after_period": {"from": row.after_from.isoformat(), "to": row.after_to.isoformat()},
+        "mean_ndvi_before": row.mean_ndvi_before, "mean_ndvi_after": row.mean_ndvi_after,
+        "ndvi_delta": row.ndvi_delta, "vegetation_loss_pct": row.vegetation_loss_pct,
+        "severity": row.severity,
+        "before_image_url": row.before_image_url, "after_image_url": row.after_image_url,
+        "cached": cached, "computed_at": row.created_at.isoformat(),
+        "note": row.note,
+    }
+
+
+def fetch_ndvi_change(db: Session, cell_id: str, *, force_refresh: bool = False) -> dict:
+    """Real Sentinel-2 NDVI before/after comparison for one risk cell's exact footprint.
+    Caches per cell_id for NDVI_CACHE_DAYS to respect Sentinel Hub's free-tier quota; a stale
+    or missing Sentinel Hub credential falls back to whatever's cached, or an honest
+    "not configured" response — never a fabricated number."""
+    cell = db.execute(text(
+        "SELECT cell_id, district, ST_XMin(geom) AS minx, ST_YMin(geom) AS miny, "
+        "ST_XMax(geom) AS maxx, ST_YMax(geom) AS maxy FROM risk_cells WHERE cell_id = :id"
+    ), {"id": cell_id}).mappings().first()
+    if not cell:
+        raise HTTPException(404, f"No risk cell '{cell_id}'")
+
+    existing = db.query(NdviReading).filter(NdviReading.cell_id == cell_id).first()
+    if existing and not force_refresh:
+        age_days = (datetime.now(timezone.utc) - existing.created_at).days
+        if age_days < NDVI_CACHE_DAYS:
+            return _ndvi_reading_out(existing, configured=True, cached=True)
+
+    token = sentinelhub_token()
+    if not token:
+        if existing:
+            return _ndvi_reading_out(existing, configured=True, cached=True)
+        return {
+            "cell_id": cell_id, "district": cell["district"], "configured": False,
+            "before_period": None, "after_period": None,
+            "mean_ndvi_before": None, "mean_ndvi_after": None,
+            "ndvi_delta": None, "vegetation_loss_pct": None, "severity": "unavailable",
+            "before_image_url": None, "after_image_url": None,
+            "cached": False, "computed_at": None,
+            "note": (
+                "Sentinel Hub isn't configured on this deployment (SENTINELHUB_CLIENT_ID / "
+                "SENTINELHUB_CLIENT_SECRET missing). Sign up for a free Sentinel Hub trial "
+                "account to enable real Sentinel-2 NDVI vegetation-change detection."
+            ),
+        }
+
+    bbox = [cell["minx"], cell["miny"], cell["maxx"], cell["maxy"]]
+    now = datetime.now(timezone.utc)
+    after_from, after_to = now - timedelta(days=90), now
+    before_from, before_to = now - timedelta(days=455), now - timedelta(days=365)
+
+    mean_before = _sh_mean_ndvi(token, bbox, before_from, before_to)
+    mean_after = _sh_mean_ndvi(token, bbox, after_from, after_to)
+    if mean_before is None or mean_after is None:
+        if existing:
+            return _ndvi_reading_out(existing, configured=True, cached=True)
+        return {
+            "cell_id": cell_id, "district": cell["district"], "configured": True,
+            "before_period": {"from": before_from.isoformat(), "to": before_to.isoformat()},
+            "after_period": {"from": after_from.isoformat(), "to": after_to.isoformat()},
+            "mean_ndvi_before": mean_before, "mean_ndvi_after": mean_after,
+            "ndvi_delta": None, "vegetation_loss_pct": None, "severity": "unavailable",
+            "before_image_url": None, "after_image_url": None,
+            "cached": False, "computed_at": None,
+            "note": (
+                "No usable cloud-free Sentinel-2 coverage for this cell in one or both time "
+                "windows — common during NER's monsoon season. Try again later."
+            ),
+        }
+
+    before_path = NDVI_DIR / f"{cell_id}-before.png"
+    after_path = NDVI_DIR / f"{cell_id}-after.png"
+    got_before_img = _sh_ndvi_image(token, bbox, before_from, before_to, before_path)
+    got_after_img = _sh_ndvi_image(token, bbox, after_from, after_to, after_path)
+
+    delta = round(mean_after - mean_before, 4)
+    loss_pct = round(max(0.0, -delta) / max(abs(mean_before), 0.01) * 100, 1)
+    if delta <= -0.15:
+        severity = "significant vegetation loss"
+    elif delta <= -0.05:
+        severity = "moderate vegetation loss"
+    elif delta >= 0.05:
+        severity = "vegetation gain"
+    else:
+        severity = "stable"
+
+    if existing is None:
+        existing = NdviReading(cell_id=cell_id)
+        db.add(existing)
+    existing.district = cell["district"]
+    existing.before_from, existing.before_to = before_from, before_to
+    existing.after_from, existing.after_to = after_from, after_to
+    existing.mean_ndvi_before, existing.mean_ndvi_after = round(mean_before, 4), round(mean_after, 4)
+    existing.ndvi_delta, existing.vegetation_loss_pct = delta, loss_pct
+    existing.severity = severity
+    existing.before_image_url = f"/uploads/ndvi/{before_path.name}" if got_before_img else None
+    existing.after_image_url = f"/uploads/ndvi/{after_path.name}" if got_after_img else None
+    existing.note = (
+        "Real Sentinel-2 L2A NDVI, cloud/shadow-masked via the scene classification band, "
+        "aggregated over each date window by Sentinel Hub's Statistical API. Vegetation loss "
+        "is a leading indicator, not a standalone landslide prediction — deforested slopes "
+        "lose the root-cohesion that stabilises soil."
+    )
+    db.commit()
+    db.refresh(existing)
+    return _ndvi_reading_out(existing, configured=True, cached=False)
+
+
 # --- Real-time monitoring loop ---------------------------------------------------------------
 
 def fetch_live_weather(latitude: float, longitude: float) -> dict | None:
@@ -954,6 +1256,13 @@ def priorities(db: Session = Depends(get_db)):
         "note": "population_at_risk sums approximate named-settlement figures within ~2km, not live census or gridded population data.",
         "priorities": [dict(row) for row in rows],
     }
+
+
+@app.get("/api/v1/ndvi-change")
+def ndvi_change(cell_id: str, force_refresh: bool = False, db: Session = Depends(get_db)):
+    """Real Sentinel-2 satellite vegetation-change detection for one risk cell — see
+    fetch_ndvi_change() for the Sentinel Hub integration and caching policy."""
+    return fetch_ndvi_change(db, cell_id, force_refresh=force_refresh)
 
 
 @app.get("/api/v1/evacuation-route")

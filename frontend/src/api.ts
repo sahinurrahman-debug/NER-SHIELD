@@ -126,3 +126,30 @@ export async function getEvacuationRoute(fromLat: number, fromLon: number) {
   }
   return response.json() as Promise<EvacuationRoute>;
 }
+
+export type NdviChange = {
+  cell_id: string; district: string; configured: boolean;
+  before_period: { from: string; to: string } | null;
+  after_period: { from: string; to: string } | null;
+  mean_ndvi_before: number | null; mean_ndvi_after: number | null;
+  ndvi_delta: number | null; vegetation_loss_pct: number | null;
+  severity: string;
+  before_image_url: string | null; after_image_url: string | null;
+  cached: boolean; computed_at: string | null;
+  note: string;
+};
+
+export async function getNdviChange(cellId: string, forceRefresh = false) {
+  const response = await fetch(
+    `${API}/api/v1/ndvi-change?cell_id=${encodeURIComponent(cellId)}${forceRefresh ? "&force_refresh=true" : ""}`
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}) as { detail?: string });
+    throw new Error(body.detail || "Could not load NDVI vegetation-change data");
+  }
+  return response.json() as Promise<NdviChange>;
+}
+
+export function imageUrl(path: string) {
+  return `${API}${path}`;
+}
