@@ -596,10 +596,10 @@ export default function App() {
         </div>
         <div className="sub-panel">
           <h2 className="panel-title"><span className="dot" />Weather-Linked Risk Forecast</h2>
-          {forecastNote && <p className="forecast-note">{forecastNote}</p>}
+
           {forecastPoints.map((point, i) => (
             <div className={`forecast-point ${point.severity}`} key={i}>
-              <b>{point.risk_score}%</b> · {point.severity} · {point.rain_24h_mm.toFixed(0)}mm rain · {point.source}
+              <b>{point.risk_score}%</b> · {point.severity} · {point.rain_24h_mm.toFixed(0)}mm rain 
               <small> {new Date(point.created_at).toLocaleString()}</small>
             </div>
           ))}
