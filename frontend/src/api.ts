@@ -23,6 +23,14 @@ export type Report = {
   trust_score: number | null; trust_flags: string | null;
 };
 
+export type DistrictsResponse = { states: { state: string; districts: string[] }[]; note: string };
+
+export async function getDistricts() {
+  const response = await fetch(`${API}/api/v1/districts`);
+  if (!response.ok) throw new Error("Could not load districts");
+  return response.json() as Promise<DistrictsResponse>;
+}
+
 export async function getSummary() {
   const response = await fetch(`${API}/api/v1/summary`);
   if (!response.ok) throw new Error("Could not load dashboard summary");

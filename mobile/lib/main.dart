@@ -6,6 +6,7 @@ import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'districts.dart';
 import 'strings.dart';
 
 const apiBaseUrl = 'https://ner-shield-api.onrender.com';
@@ -121,7 +122,8 @@ class ReportPage extends StatefulWidget {
 
 class _ReportPageState extends State<ReportPage> {
   final description = TextEditingController();
-  final district = TextEditingController(text: 'East Khasi Hills');
+  String selectedState = 'Meghalaya';
+  String selectedDistrict = 'East Khasi Hills';
   String reportType = 'crack';
   String severity = 'moderate';
   String? status;
@@ -169,7 +171,7 @@ class _ReportPageState extends State<ReportPage> {
   Map<String, dynamic> payload(String? imageUrl) => {
     'report_type': reportType, 'severity': severity, 'description': description.text,
     'latitude': latitude ?? 25.5788, 'longitude': longitude ?? 91.8933,
-    'district': district.text.trim().isEmpty ? null : district.text.trim(),
+    'district': selectedDistrict,
     'road_status': 'restricted', 'reporter_role': 'citizen',
     if (imageUrl != null) 'image_url': imageUrl,
   };
@@ -224,7 +226,22 @@ class _ReportPageState extends State<ReportPage> {
     DropdownButtonFormField(initialValue: severity, items: ['low','moderate','high','critical']
       .map((v) => DropdownMenuItem(value: v, child: Text(t(lang, v)))).toList(), onChanged: (v) => setState(() => severity = v!)),
     const SizedBox(height: 12),
-    TextField(controller: district, decoration: InputDecoration(labelText: t(lang, 'district_label'), border: const OutlineInputBorder())),
+    DropdownButtonFormField(
+      initialValue: selectedState,
+      decoration: InputDecoration(labelText: t(lang, 'state_label'), border: const OutlineInputBorder()),
+      items: nerDistricts.keys.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+      onChanged: (v) => setState(() {
+        selectedState = v!;
+        selectedDistrict = nerDistricts[v]!.first;
+      }),
+    ),
+    const SizedBox(height: 12),
+    DropdownButtonFormField(
+      initialValue: selectedDistrict,
+      decoration: InputDecoration(labelText: t(lang, 'district_label'), border: const OutlineInputBorder()),
+      items: nerDistricts[selectedState]!.map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
+      onChanged: (v) => setState(() => selectedDistrict = v!),
+    ),
     const SizedBox(height: 12),
     TextField(controller: description, maxLines: 4, decoration: InputDecoration(labelText: t(lang, 'description_label'), border: const OutlineInputBorder())),
     const SizedBox(height: 12),

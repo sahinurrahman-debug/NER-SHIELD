@@ -83,6 +83,58 @@ FEATURES = [
 ]
 Severity = Literal["low", "moderate", "high", "critical"]
 
+# The full service area: all eight North Eastern Region states, not just the seeded Meghalaya
+# demo data. Served via GET /api/v1/districts so the web dashboard and mobile app both pull
+# from this one list instead of maintaining their own copies (the mobile app embeds its own
+# static copy instead — see mobile/lib/districts.dart — since a citizen filling out a report
+# during a connectivity outage shouldn't be blocked by a failed districts-list fetch).
+# District boundaries and counts change periodically as new districts are notified (especially
+# in Assam and Manipur); this reflects publicly available data as of this project's development
+# and should be revalidated against the latest state gazette before real deployment — the same
+# honesty caveat as the seeded demo risk cells below.
+NER_DISTRICTS: dict[str, list[str]] = {
+    "Arunachal Pradesh": [
+        "Tawang", "West Kameng", "East Kameng", "Pakke-Kessang", "Papum Pare", "Kra Daadi",
+        "Kurung Kumey", "Kamle", "Lower Subansiri", "Upper Subansiri", "West Siang", "Lepa Rada",
+        "East Siang", "Siang", "Upper Siang", "Lower Siang", "Lower Dibang Valley", "Dibang Valley",
+        "Anjaw", "Lohit", "Namsai", "Changlang", "Tirap", "Longding", "Shi Yomi",
+        "Itanagar Capital Complex",
+    ],
+    "Assam": [
+        "Baksa", "Barpeta", "Biswanath", "Bongaigaon", "Cachar", "Charaideo", "Chirang", "Darrang",
+        "Dhemaji", "Dhubri", "Dibrugarh", "Dima Hasao", "Goalpara", "Golaghat", "Hailakandi",
+        "Hojai", "Jorhat", "Kamrup", "Kamrup Metropolitan", "Karbi Anglong", "Karimganj",
+        "Kokrajhar", "Lakhimpur", "Majuli", "Morigaon", "Nagaon", "Nalbari", "Sivasagar",
+        "South Salmara-Mankachar", "Sonitpur", "Tinsukia", "Udalguri", "West Karbi Anglong",
+        "Bajali", "Tamulpur",
+    ],
+    "Manipur": [
+        "Bishnupur", "Chandel", "Churachandpur", "Imphal East", "Imphal West", "Jiribam",
+        "Kakching", "Kamjong", "Kangpokpi", "Noney", "Pherzawl", "Senapati", "Tamenglong",
+        "Tengnoupal", "Thoubal", "Ukhrul",
+    ],
+    "Meghalaya": [
+        "East Khasi Hills", "West Khasi Hills", "South West Khasi Hills", "Eastern West Khasi Hills",
+        "Ri Bhoi", "East Jaintia Hills", "West Jaintia Hills", "East Garo Hills", "West Garo Hills",
+        "South Garo Hills", "North Garo Hills", "South West Garo Hills",
+    ],
+    "Mizoram": [
+        "Aizawl", "Lunglei", "Champhai", "Mamit", "Kolasib", "Serchhip", "Lawngtlai", "Saiha",
+        "Khawzawl", "Hnahthial", "Saitual",
+    ],
+    "Nagaland": [
+        "Kohima", "Dimapur", "Mokokchung", "Tuensang", "Wokha", "Zunheboto", "Phek", "Mon",
+        "Longleng", "Kiphire", "Peren", "Noklak", "Chumoukedima", "Niuland", "Shamator", "Tseminyu",
+    ],
+    "Sikkim": [
+        "East Sikkim", "West Sikkim", "North Sikkim", "South Sikkim", "Pakyong", "Soreng",
+    ],
+    "Tripura": [
+        "West Tripura", "Sepahijala", "Gomati", "South Tripura", "Dhalai", "Khowai", "Unakoti",
+        "North Tripura",
+    ],
+}
+
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 loaded_model = None
@@ -1163,6 +1215,12 @@ def seed_demo_data() -> None:
             ("demo-001", "East Khasi Hills", "POLYGON((91.875 25.575,91.885 25.575,91.885 25.585,91.875 25.585,91.875 25.575))", 43, 168, 82, 0.72, 86, "critical"),
             ("demo-002", "East Khasi Hills", "POLYGON((91.885 25.575,91.895 25.575,91.895 25.585,91.885 25.585,91.885 25.575))", 31, 93, 64, 0.45, 58, "high"),
             ("demo-003", "East Khasi Hills", "POLYGON((91.875 25.585,91.885 25.585,91.885 25.595,91.875 25.595,91.875 25.585))", 19, 35, 42, 0.18, 24, "low"),
+            # A few more seeded points elsewhere in the region — proof this isn't a Meghalaya-only
+            # system, not an attempt at full NER coverage (that needs real sensor/IMD data per
+            # district; see the "note" in GET /api/v1/districts).
+            ("demo-004", "Papum Pare", "POLYGON((93.600 27.080,93.610 27.080,93.610 27.090,93.600 27.090,93.600 27.080))", 38, 120, 58, 0.35, 48, "moderate"),
+            ("demo-005", "Aizawl", "POLYGON((92.712 23.722,92.722 23.722,92.722 23.732,92.712 23.732,92.712 23.722))", 47, 145, 71, 0.55, 68, "high"),
+            ("demo-006", "Kohima", "POLYGON((94.103 25.670,94.113 25.670,94.113 25.680,94.103 25.680,94.103 25.670))", 33, 88, 48, 0.22, 32, "moderate"),
         ]
         statement = text("""
             INSERT INTO risk_cells
@@ -1372,6 +1430,24 @@ def road_status(db: Session = Depends(get_db)):
         "SELECT status, COUNT(*) AS count FROM infrastructure WHERE kind = 'road' GROUP BY status"
     )).mappings().all()
     return {(row["status"] or "unknown"): row["count"] for row in rows}
+
+
+@app.get("/api/v1/districts")
+def districts():
+    """The full NER-SHIELD service area, grouped by state — see NER_DISTRICTS above for the
+    honesty caveat on district boundaries/counts. Every district here works with /predict and
+    field reports; only Meghalaya has seeded demo risk data (plus a few landslide-prone spots
+    in Arunachal Pradesh, Mizoram and Nagaland — see seed_demo_data()) today, so a freshly
+    selected district legitimately starts with no historical readings until real data or a
+    live prediction populates one."""
+    return {
+        "states": [{"state": state, "districts": names} for state, names in NER_DISTRICTS.items()],
+        "note": (
+            "Covers all eight North Eastern Region states. Only a handful of districts have "
+            "seeded demo risk data today — every other district is fully usable via /predict "
+            "and field reports, it just starts with no historical readings."
+        ),
+    }
 
 
 @app.get("/api/v1/forecast")

@@ -69,7 +69,7 @@ header p { color: #94a3b8; }
 .priority-table tr.critical td:nth-child(2) { color: #f87171; font-weight: 700; } .priority-table tr.high td:nth-child(2) { color: #fb923c; font-weight: 700; }
 
 .forecast-controls { display: flex; gap: 8px; margin-bottom: 10px; }
-.forecast-controls input { flex: 1; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 8px; padding: 9px; }
+.forecast-controls input, .forecast-controls select { flex: 1; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 8px; padding: 9px; }
 .forecast-controls button { background: linear-gradient(135deg, #f59e0b, #d97706); border: none; border-radius: 8px; padding: 9px 16px; font-weight: 700; cursor: pointer; color: #111827; }
 .forecast-note { color: #94a3b8; font-size: 0.85rem; }
 .forecast-point { border-bottom: 1px solid #334155; padding: 8px 0; font-size: 0.9rem; }

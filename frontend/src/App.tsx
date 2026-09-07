@@ -5,10 +5,10 @@ import { Circle, CircleMarker as RLCircleMarker, GeoJSON, MapContainer, Polyline
 import { CircleMarker } from "leaflet";
 import type { Map as LeafletMap, PathOptions } from "leaflet";
 import {
-  getAlerts, getEvacuationRoute, getForecast, getInfrastructure, getNdviChange, getOutlook, getPriorities, getReports,
-  getRiskCells, getRoadStatus, getSummary, getWsUrl, imageUrl, runPrediction,
-  type Alert, type EvacuationRoute, type Feature as RiskFeature, type ForecastPoint, type InfraFeature,
-  type LiveMessage, type NdviChange, type Outlook, type PredictResponse, type Priority, type Report,
+  getAlerts, getDistricts, getEvacuationRoute, getForecast, getInfrastructure, getNdviChange, getOutlook,
+  getPriorities, getReports, getRiskCells, getRoadStatus, getSummary, getWsUrl, imageUrl, runPrediction,
+  type Alert, type DistrictsResponse, type EvacuationRoute, type Feature as RiskFeature, type ForecastPoint,
+  type InfraFeature, type LiveMessage, type NdviChange, type Outlook, type PredictResponse, type Priority, type Report,
 } from "./api";
 
 const colours: Record<string, string> = {
@@ -105,6 +105,7 @@ export default function App() {
   const [ndviBusy, setNdviBusy] = useState(false);
   const [ndviError, setNdviError] = useState("");
   const [wsConnected, setWsConnected] = useState(false);
+  const [districts, setDistricts] = useState<DistrictsResponse["states"]>([]);
   const mapRef = useRef<LeafletMap | null>(null);
 
   // Derived live from `cells` (not a separate fetched snapshot) so a risk-cell update pushed
@@ -132,6 +133,7 @@ export default function App() {
       })
       .catch((err: Error) => setError(err.message));
     getOutlook("East Khasi Hills").then(setOutlook).catch(() => {});
+    getDistricts().then((d) => setDistricts(d.states)).catch(() => {});
   }, []);
 
   // Live push channel: new alerts and risk-cell changes arrive the instant they happen on the
@@ -442,8 +444,7 @@ export default function App() {
       <section className="sub-panel ndvi-panel">
         <h2 className="panel-title"><span className="dot" />Satellite vegetation change — real Sentinel-2 NDVI</h2>
         <p className="forecast-note">
-          Real Sentinel-2 L2A satellite imagery pulled live from Sentinel Hub — not a proxy input — comparing
-          this risk cell's vegetation cover now against the same season one year ago. Deforestation is a leading
+          Real Sentinel-2 L2A satellite imagery pulled live from Sentinel Hub comparing this risk cell's vegetation cover now against the same season one year ago. Deforestation is a leading
           landslide indicator: it strips the root cohesion that holds slope soil in place.
         </p>
         <div className="forecast-controls">
@@ -557,15 +558,25 @@ export default function App() {
           <div className="sub-panel outlook-panel">
             <h2 className="panel-title"><span className="dot" />Risk probability &amp; outlook</h2>
             <div className="forecast-controls">
-              <input value={forecastDistrict} onChange={(e) => setForecastDistrict(e.target.value)} placeholder="District name" />
+              <select value={forecastDistrict} onChange={(e) => setForecastDistrict(e.target.value)}>
+                {districts.map((s) => (
+                  <optgroup key={s.state} label={s.state}>
+                    {s.districts.map((d) => <option key={d} value={d}>{d}</option>)}
+                  </optgroup>
+                ))}
+              </select>
               <button onClick={loadForecast}>Load</button>
             </div>
+            <p className="forecast-note">
+              Covers all North Eastern Region districts — only a few have seeded demo data
+              today, every other district works via a live prediction or field report.
+            </p>
             {outlook && (
               <div className="outlook-body">
                 <div className="outlook-main">
                   <div className="outlook-probability">
                     <strong>{outlook.probability !== null ? `${Math.round(outlook.probability * 100)}%` : "—"}</strong>
-                    <span>predicted probability within 7 days</span>
+                    <span>predicted probability</span>
                   </div>
                   {outlook.severity && (
                     <span className={`alert-status severity-badge ${outlook.severity}`}>{outlook.severity}</span>
