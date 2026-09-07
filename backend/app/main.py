@@ -1208,9 +1208,11 @@ async def monitor_loop() -> None:
 
 
 def seed_demo_data() -> None:
+    """Idempotent per-cell_id (ON CONFLICT DO NOTHING) rather than gated on the table being
+    empty — a production database that already has rows from earlier demo cells still needs
+    to pick up newly added ones (e.g. the Arunachal Pradesh/Mizoram/Nagaland additions below)
+    on the next startup, the same backfill problem seed_evacuation_roads() solves for roads."""
     with SessionLocal() as db:
-        if db.query(RiskCell).count() > 0:
-            return
         rows = [
             ("demo-001", "East Khasi Hills", "POLYGON((91.875 25.575,91.885 25.575,91.885 25.585,91.875 25.585,91.875 25.575))", 43, 168, 82, 0.72, 86, "critical"),
             ("demo-002", "East Khasi Hills", "POLYGON((91.885 25.575,91.895 25.575,91.895 25.585,91.885 25.585,91.885 25.575))", 31, 93, 64, 0.45, 58, "high"),
@@ -1226,6 +1228,7 @@ def seed_demo_data() -> None:
             INSERT INTO risk_cells
             (cell_id,district,geom,slope_deg,rain_24h_mm,soil_moisture_pct,historical_density,risk_score,severity)
             VALUES (:id,:district,ST_GeomFromText(:wkt,4326),:slope,:rain,:soil,:history,:score,:severity)
+            ON CONFLICT (cell_id) DO NOTHING
         """)
         for row in rows:
             db.execute(statement, {
