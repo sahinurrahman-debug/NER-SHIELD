@@ -93,3 +93,21 @@ export async function getOutlook(district: string) {
   if (!response.ok) throw new Error("Could not load outlook");
   return response.json() as Promise<Outlook>;
 }
+
+export type ShapFactor = { feature: string; value: number | null; impact: number };
+export type Explanation = { base_value: number; top_factors: ShapFactor[]; note: string };
+export type PredictResponse = {
+  probability: number; risk_score: number; severity: string; source: string;
+  contributing_factors: string[]; alert_triggered: boolean; risk_cell_id: string | null;
+  imputed_fields: string[]; explanation: Explanation | null;
+};
+
+export async function runPrediction(input: Record<string, number | string | null>) {
+  const response = await fetch(`${API}/api/v1/predict`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error("Prediction failed — check inputs");
+  return response.json() as Promise<PredictResponse>;
+}

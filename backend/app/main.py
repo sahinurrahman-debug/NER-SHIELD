@@ -12,6 +12,7 @@ from typing import Literal
 import httpx
 import joblib
 import numpy as np
+import shap
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -68,6 +69,8 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 loaded_model = None
 monitor_task: asyncio.Task | None = None
+shap_explainer = None  # set in lifespan() if the trained model's internals can be extracted
+shap_imputer = None
 
 
 class Base(DeclarativeBase):
@@ -293,6 +296,51 @@ def contributing_factors(p: RiskFeatures) -> list[str]:
 
 def missing_features(p: RiskFeatures) -> list[str]:
     return [feature for feature in FEATURES if getattr(p, feature) is None]
+
+
+def compute_explanation(p: RiskFeatures) -> dict | None:
+    """Real SHAP values from the trained model's own decision trees — exactly how much
+    each reading pushed this specific prediction up or down, not a hand-written rule.
+    Explains the tree model's raw score (pre-calibration); the calibrated probability
+    returned alongside it is a separately-calibrated readout of the same model, so the
+    two numbers won't match exactly — that's expected, not a bug."""
+    if shap_explainer is None or shap_imputer is None:
+        return None
+    try:
+        row = np.array(
+            [[getattr(p, feature) if getattr(p, feature) is not None else np.nan for feature in FEATURES]],
+            dtype=float,
+        )
+        imputed = shap_imputer.transform(row)
+        raw_values = shap_explainer.shap_values(imputed)
+        values = raw_values[1][0] if isinstance(raw_values, list) else raw_values[0]
+        base_value = shap_explainer.expected_value
+        if isinstance(base_value, (list, np.ndarray)):
+            base_value = base_value[1] if len(base_value) > 1 else base_value[0]
+        top_factors = sorted(
+            (
+                {
+                    "feature": feature,
+                    "value": getattr(p, feature) if getattr(p, feature) is not None else None,
+                    "impact": round(float(v), 4),
+                }
+                for feature, v in zip(FEATURES, values)
+            ),
+            key=lambda item: abs(item["impact"]),
+            reverse=True,
+        )
+        return {
+            "base_value": round(float(base_value), 4),
+            "top_factors": top_factors[:8],
+            "note": (
+                "SHAP values from the trained model's underlying decision trees: positive "
+                "impact pushed this prediction toward higher risk, negative pushed it lower. "
+                "Explains the model's raw score, not the calibrated probability above."
+            ),
+        }
+    except Exception as exc:
+        logger.error("SHAP explanation failed: %r", exc)
+        return None
 
 
 def predict(p: RiskFeatures) -> tuple[float, str]:
@@ -563,7 +611,7 @@ def seed_infrastructure() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global loaded_model, monitor_task
+    global loaded_model, monitor_task, shap_explainer, shap_imputer
     Base.metadata.create_all(bind=engine)  # MVP only; use Alembic migrations before production.
     if Path(MODEL_PATH).exists():
         candidate = joblib.load(MODEL_PATH)
@@ -571,6 +619,20 @@ async def lifespan(_: FastAPI):
         if expected != FEATURES:
             raise RuntimeError(f"Model features must exactly be {FEATURES}; got {expected}")
         loaded_model = candidate
+        try:
+            # CalibratedClassifierCV wraps N fitted clones of the training Pipeline (one per
+            # CV fold) — pull the imputer + XGBClassifier out of the first fold so SHAP can
+            # explain the actual tree model, fed through the same imputation the model itself
+            # uses at inference time. Left disabled (None) rather than crashing startup if
+            # sklearn's internal layout ever differs from what training produced.
+            fold = candidate.calibrated_classifiers_[0]
+            base_pipeline = getattr(fold, "estimator", None) or getattr(fold, "base_estimator", None)
+            shap_imputer = base_pipeline.named_steps["impute"]
+            shap_explainer = shap.TreeExplainer(base_pipeline.named_steps["model"])
+        except Exception as exc:
+            logger.error("Could not build SHAP explainer, /predict will omit explanations: %r", exc)
+            shap_explainer = None
+            shap_imputer = None
     seed_demo_data()
     seed_infrastructure()
     if MONITOR_ENABLED:
@@ -795,6 +857,7 @@ def prediction(payload: RiskFeatures, db: Session = Depends(get_db)):
         "alert_triggered": alert_triggered,
         "risk_cell_id": risk_cell_id,
         "imputed_fields": missing_features(payload),
+        "explanation": compute_explanation(payload) if source == "ml_model" else None,
     }
 
 

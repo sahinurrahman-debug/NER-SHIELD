@@ -6,7 +6,9 @@ import { CircleMarker } from "leaflet";
 import type { Map as LeafletMap, PathOptions } from "leaflet";
 import {
   getAlerts, getForecast, getInfrastructure, getOutlook, getPriorities, getReports, getRiskCells, getRoadStatus, getSummary,
-  type Alert, type Feature as RiskFeature, type ForecastPoint, type InfraFeature, type Outlook, type Priority, type Report,
+  runPrediction,
+  type Alert, type Feature as RiskFeature, type ForecastPoint, type InfraFeature, type Outlook, type PredictResponse,
+  type Priority, type Report,
 } from "./api";
 
 const colours: Record<string, string> = {
@@ -86,6 +88,10 @@ export default function App() {
   const [forecastPoints, setForecastPoints] = useState<ForecastPoint[]>([]);
   const [forecastNote, setForecastNote] = useState("");
   const [outlook, setOutlook] = useState<Outlook | null>(null);
+  const [shapInputs, setShapInputs] = useState({ Rainfall_mm: 150, Slope_Angle: 40, Soil_Saturation: 0.5, Vegetation_Cover: 0.5 });
+  const [predictResult, setPredictResult] = useState<PredictResponse | null>(null);
+  const [predictBusy, setPredictBusy] = useState(false);
+  const [predictError, setPredictError] = useState("");
   const mapRef = useRef<LeafletMap | null>(null);
 
   useEffect(() => {
@@ -117,6 +123,17 @@ export default function App() {
     const map = mapRef.current;
     const center = locateAlert(alert, cells, reports);
     if (map && center) map.flyTo(center, 15);
+  }
+
+  function runExplainablePrediction() {
+    setPredictBusy(true);
+    setPredictError("");
+    // Deliberately omits district/lat/lon — a pure explainability sandbox that never
+    // creates alerts, map cells, or forecast entries, so it's safe to click repeatedly.
+    runPrediction(shapInputs)
+      .then(setPredictResult)
+      .catch((err: Error) => setPredictError(err.message))
+      .finally(() => setPredictBusy(false));
   }
 
   const geoJsonData: GeoJSON.FeatureCollection = {
@@ -228,6 +245,80 @@ export default function App() {
             ))}
           </div>
         </div>
+      </section>
+
+      <section className="sub-panel explainability-panel">
+        <h2 className="panel-title"><span className="dot" />AI explainability — try a live prediction</h2>
+        <p className="forecast-note">
+          Adjust the 4 readings that actually drive this model, run a real prediction, and see exactly how much
+          each one pushed the risk score up or down — genuine SHAP values from the trained model's own decision
+          trees, not a canned explanation. This is a sandbox: it never creates alerts or map cells.
+        </p>
+        <div className="shap-inputs">
+          <label>Rainfall (mm)
+            <input type="number" value={shapInputs.Rainfall_mm}
+              onChange={(e) => setShapInputs({ ...shapInputs, Rainfall_mm: Number(e.target.value) })} />
+          </label>
+          <label>Slope angle (°)
+            <input type="number" value={shapInputs.Slope_Angle}
+              onChange={(e) => setShapInputs({ ...shapInputs, Slope_Angle: Number(e.target.value) })} />
+          </label>
+          <label>Soil saturation (0–1)
+            <input type="number" step="0.01" min="0" max="1" value={shapInputs.Soil_Saturation}
+              onChange={(e) => setShapInputs({ ...shapInputs, Soil_Saturation: Number(e.target.value) })} />
+          </label>
+          <label>Vegetation cover (0–1)
+            <input type="number" step="0.01" min="0" max="1" value={shapInputs.Vegetation_Cover}
+              onChange={(e) => setShapInputs({ ...shapInputs, Vegetation_Cover: Number(e.target.value) })} />
+          </label>
+        </div>
+        <button onClick={runExplainablePrediction} disabled={predictBusy}>
+          {predictBusy ? "Running…" : "Run prediction"}
+        </button>
+        {predictError && <p className="error">{predictError}</p>}
+        {predictResult && (
+          <div className="predict-result">
+            <div className="outlook-main">
+              <div className="outlook-probability">
+                <strong>{Math.round(predictResult.probability * 100)}%</strong>
+                <span>risk score {predictResult.risk_score} · source: {predictResult.source}</span>
+              </div>
+              <span className={`alert-status severity-badge ${predictResult.severity}`}>{predictResult.severity}</span>
+            </div>
+            {predictResult.explanation ? (
+              <>
+                <div className="shap-chart">
+                  {predictResult.explanation.top_factors.map((f) => {
+                    const maxAbs = Math.max(...predictResult.explanation!.top_factors.map((x) => Math.abs(x.impact)), 0.0001);
+                    const pct = (Math.abs(f.impact) / maxAbs) * 50;
+                    const positive = f.impact >= 0;
+                    return (
+                      <div className="shap-row" key={f.feature}>
+                        <span className="shap-label">{f.feature}{f.value !== null ? ` (${f.value})` : ""}</span>
+                        <div className="shap-track">
+                          <div className="shap-center-line" />
+                          <div
+                            className="shap-fill"
+                            style={{ width: `${pct}%`, left: positive ? "50%" : `${50 - pct}%`, background: positive ? "#f87171" : "#4ade80" }}
+                          />
+                        </div>
+                        <span className="shap-value">{f.impact >= 0 ? "+" : ""}{f.impact}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="forecast-note">{predictResult.explanation.note}</p>
+              </>
+            ) : (
+              <>
+                <p className="forecast-note">
+                  SHAP explanation unavailable for this prediction (source: {predictResult.source}). Contributing factors:
+                </p>
+                <ul>{predictResult.contributing_factors.map((f) => <li key={f}>{f}</li>)}</ul>
+              </>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="layout">
