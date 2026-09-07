@@ -115,6 +115,26 @@ export default function App() {
     return c;
   }, [cells]);
 
+  // NDVI cell picker grouped by state, same pattern as the district dropdowns — a flat list
+  // of 100+ risk cells (once every NER district has a baseline cell) would be unusable
+  // otherwise. Cells whose district isn't in the fetched district list (shouldn't normally
+  // happen) fall under "Other" rather than being silently dropped.
+  const ndviCellsByState = useMemo(() => {
+    const districtToState = new Map<string, string>();
+    for (const s of districts) for (const d of s.districts) districtToState.set(d, s.state);
+    const seen = new Set<string>();
+    const grouped = new Map<string, { id: string; district: string }[]>();
+    for (const cell of cells) {
+      const id = cell.properties.cell_id;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const state = districtToState.get(cell.properties.district) ?? "Other";
+      if (!grouped.has(state)) grouped.set(state, []);
+      grouped.get(state)!.push({ id, district: cell.properties.district });
+    }
+    return grouped;
+  }, [cells, districts]);
+
   useEffect(() => {
     Promise.all([getRiskCells(), getReports(), getAlerts(), getInfrastructure(), getRoadStatus(), getPriorities()])
       .then(([cellsResponse, reportsResponse, alertsResponse, infraResponse, roadStatusResponse, prioritiesResponse]) => {
@@ -449,10 +469,11 @@ export default function App() {
         </p>
         <div className="forecast-controls">
           <select value={ndviCellId} onChange={(e) => setNdviCellId(e.target.value)}>
-            {Array.from(new Set(cells.map((c) => c.properties.cell_id))).map((id) => {
-              const cell = cells.find((c) => c.properties.cell_id === id);
-              return <option key={id} value={id}>{id}{cell ? ` · ${cell.properties.district}` : ""}</option>;
-            })}
+            {Array.from(ndviCellsByState.entries()).map(([state, options]) => (
+              <optgroup key={state} label={state}>
+                {options.map((o) => <option key={o.id} value={o.id}>{o.district} ({o.id})</option>)}
+              </optgroup>
+            ))}
           </select>
           <button onClick={() => loadNdviChange(false)} disabled={ndviBusy || !ndviCellId}>
             {ndviBusy ? "Analyzing…" : "Analyze vegetation change"}

@@ -841,6 +841,41 @@ def _overpass_post(query: str, timeout: float) -> dict | None:
     return None
 
 
+def _geocode_district(district: str) -> tuple[float, float] | None:
+    """Approximate town-centre coordinates for a district with no risk cell yet, via a real
+    geocoder (Nominatim, falling back to Photon) — never fabricated. Used so a district-only
+    /predict call for a district nobody has ever pinned a location to yet still gets a real
+    place on the map instead of the reading only showing up in outlook/forecast. Returns None
+    on failure; never raises."""
+    headers = {"User-Agent": "NER-SHIELD/1.0 (landslide early-warning system; SIH 2026)"}
+    try:
+        response = httpx.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": f"{district}, India", "format": "json", "limit": 1},
+            headers=headers, timeout=10,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body:
+            return float(body[0]["lat"]), float(body[0]["lon"])
+    except (httpx.HTTPError, KeyError, ValueError, IndexError) as exc:
+        logger.error("Nominatim geocode for %s failed: %r", district, exc)
+    try:
+        response = httpx.get(
+            "https://photon.komoot.io/api/",
+            params={"q": f"{district}, India", "limit": 1},
+            headers=headers, timeout=10,
+        )
+        response.raise_for_status()
+        features = response.json().get("features", [])
+        if features:
+            lon, lat = features[0]["geometry"]["coordinates"]
+            return lat, lon
+    except (httpx.HTTPError, KeyError, ValueError, IndexError) as exc:
+        logger.error("Photon geocode for %s failed: %r", district, exc)
+    return None
+
+
 def _nearest_hospital_overpass(lat: float, lon: float, radius_km: float = 15.0) -> dict | None:
     """Finds the nearest real hospital via OpenStreetMap's Overpass API — used whenever the
     requested point falls outside the small seeded local road network, so evacuation routing
@@ -1459,6 +1494,45 @@ async def seed_ner_hospitals() -> None:
         logger.error("NER-wide hospital seed failed (will retry next startup): %r", exc, exc_info=True)
 
 
+async def seed_district_baseline_cells() -> None:
+    """One-time background task: ensures every NER district has at least one risk cell to
+    anchor predictions to. Without this, a district-only /predict call (no exact
+    coordinates — see the 'elif payload.district' branch there) for a district with zero
+    seeded/live cells has nowhere to update, so however high its predicted risk, it silently
+    never appears in risk-cells or Emergency response prioritisation — only in the
+    outlook/forecast panels. Geocodes each missing district's approximate town centre via a
+    real public geocoder (_geocode_district()), seeded once at a neutral 'low' baseline —
+    not a real assessment, just a placeholder anchor — then /predict updates it in place
+    from then on. Runs in the background since geocoding ~100+ districts one at a time,
+    respecting Nominatim's 1-request/second fair-use policy, takes a few minutes; wrapped
+    like seed_ner_hospitals() so nothing here dies silently as an unawaited task."""
+    try:
+        logger.info("District baseline seed: starting")
+        with SessionLocal() as db:
+            existing = {row[0] for row in db.execute(text("SELECT DISTINCT district FROM risk_cells")).all()}
+        missing = [d for districts in NER_DISTRICTS.values() for d in districts if d not in existing]
+        if not missing:
+            logger.info("District baseline seed: every district already has a risk cell, skipping")
+            return
+        logger.info("District baseline seed: %d districts need a cell", len(missing))
+        seeded = 0
+        for district in missing:
+            point = await asyncio.to_thread(_geocode_district, district)
+            if point:
+                with SessionLocal() as db:
+                    if not db.execute(text("SELECT 1 FROM risk_cells WHERE district = :d"), {"d": district}).first():
+                        upsert_risk_cell(
+                            db, latitude=point[0], longitude=point[1], district=district,
+                            slope_deg=25.0, rain_24h_mm=0.0, soil_moisture_pct=30.0,
+                            historical_density=0.0, risk_score=15.0, severity="low",
+                        )
+                        seeded += 1
+            await asyncio.sleep(1.1)  # respect Nominatim's 1 req/sec fair-use policy
+        logger.info("District baseline seed: done, seeded %d new district cells", seeded)
+    except Exception as exc:
+        logger.error("District baseline seed failed (will retry next startup): %r", exc, exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global loaded_model, monitor_task, shap_explainer, shap_imputer, main_event_loop
@@ -1499,10 +1573,12 @@ async def lifespan(_: FastAPI):
     seed_infrastructure()
     seed_evacuation_roads()
     hospital_seed_task = asyncio.create_task(seed_ner_hospitals())
+    district_seed_task = asyncio.create_task(seed_district_baseline_cells())
     if MONITOR_ENABLED:
         monitor_task = asyncio.create_task(monitor_loop())
     yield
     hospital_seed_task.cancel()
+    district_seed_task.cancel()
     if monitor_task:
         monitor_task.cancel()
 
@@ -1890,6 +1966,22 @@ def prediction(payload: RiskFeatures, db: Session = Depends(get_db)):
             })
             db.commit()
             live_manager.broadcast({"type": "risk_cells", "features": _risk_cell_features_by_ids(db, [risk_cell_id])})
+        else:
+            # This district has no risk cell yet at all (not seeded, no earlier live
+            # prediction) — geocode its approximate town centre so it still gets a real
+            # place on the map and in the prioritisation table, instead of the reading
+            # disappearing into the outlook/forecast panels only. Subsequent district-only
+            # predictions find this same cell via the district lookup above.
+            point = _geocode_district(payload.district)
+            if point:
+                risk_cell_id = upsert_risk_cell(
+                    db, latitude=point[0], longitude=point[1], district=payload.district,
+                    slope_deg=_or_default(payload.Slope_Angle, "Slope_Angle"),
+                    rain_24h_mm=_or_default(payload.Rainfall_mm, "Rainfall_mm"),
+                    soil_moisture_pct=_or_default(payload.Soil_Moisture_Content, "Soil_Moisture_Content") * 100,
+                    historical_density=min(_or_default(payload.Historical_Landslide_Count, "Historical_Landslide_Count") / 6, 1),
+                    risk_score=score, severity=severity,
+                )
 
     alert_triggered = False
     if payload.district:
