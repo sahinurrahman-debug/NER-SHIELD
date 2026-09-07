@@ -815,6 +815,32 @@ def _nearest_node(graph: nx.Graph, lon: float, lat: float) -> tuple[tuple[float,
 LOCAL_GRAPH_COVERAGE_KM = 5.0
 
 
+# Public Overpass instances, tried in order. A single shared server can (and, live, did)
+# temporarily refuse connections from an IP it perceives as overusing it — trying the next
+# mirror instead of failing outright means one instance's rate-limiting doesn't take the
+# whole feature down.
+OVERPASS_MIRRORS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.openstreetmap.fr/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+]
+
+
+def _overpass_post(query: str, timeout: float) -> dict | None:
+    """POSTs an Overpass QL query, trying each mirror in OVERPASS_MIRRORS in turn until one
+    succeeds. Returns the parsed JSON body, or None if every mirror fails — never raises."""
+    headers = {"User-Agent": "NER-SHIELD/1.0 (landslide early-warning system; SIH 2026)", "Accept": "application/json"}
+    for url in OVERPASS_MIRRORS:
+        try:
+            response = httpx.post(url, data={"data": query}, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.error("Overpass mirror %s failed: %r", url, exc)
+            continue
+    return None
+
+
 def _nearest_hospital_overpass(lat: float, lon: float, radius_km: float = 15.0) -> dict | None:
     """Finds the nearest real hospital via OpenStreetMap's Overpass API — used whenever the
     requested point falls outside the small seeded local road network, so evacuation routing
@@ -825,34 +851,24 @@ def _nearest_hospital_overpass(lat: float, lon: float, radius_km: float = 15.0) 
         f'[out:json][timeout:12];(node["amenity"="hospital"](around:{int(radius_km * 1000)},{lat},{lon});'
         f'way["amenity"="hospital"](around:{int(radius_km * 1000)},{lat},{lon}););out center 10;'
     )
-    try:
-        # Overpass's public server 406s requests without a real Accept/User-Agent header (its
-        # fair-use policy also asks for an identifying User-Agent on shared-server requests).
-        response = httpx.post(
-            "https://overpass-api.de/api/interpreter",
-            data={"data": query},
-            headers={"User-Agent": "NER-SHIELD/1.0 (landslide early-warning system; SIH 2026)", "Accept": "application/json"},
-            timeout=15,
-        )
-        response.raise_for_status()
-        elements = response.json().get("elements", [])
-        if not elements:
-            logger.error("Overpass found no hospitals within %.0fkm of (%s, %s)", radius_km, lat, lon)
-            return None
-        best, best_dist = None, float("inf")
-        for el in elements:
-            el_lat = el.get("lat") or el.get("center", {}).get("lat")
-            el_lon = el.get("lon") or el.get("center", {}).get("lon")
-            if el_lat is None or el_lon is None:
-                continue
-            dist = _haversine_km(lon, lat, el_lon, el_lat)
-            if dist < best_dist:
-                name = el.get("tags", {}).get("name") or "Unnamed hospital"
-                best, best_dist = {"name": name, "lat": el_lat, "lon": el_lon}, dist
-        return best
-    except (httpx.HTTPError, KeyError, ValueError) as exc:
-        logger.error("Overpass hospital lookup near (%s, %s) failed: %r", lat, lon, exc)
+    body = _overpass_post(query, timeout=15)
+    if body is None:
         return None
+    elements = body.get("elements", [])
+    if not elements:
+        logger.error("Overpass found no hospitals within %.0fkm of (%s, %s)", radius_km, lat, lon)
+        return None
+    best, best_dist = None, float("inf")
+    for el in elements:
+        el_lat = el.get("lat") or el.get("center", {}).get("lat")
+        el_lon = el.get("lon") or el.get("center", {}).get("lon")
+        if el_lat is None or el_lon is None:
+            continue
+        dist = _haversine_km(lon, lat, el_lon, el_lat)
+        if dist < best_dist:
+            name = el.get("tags", {}).get("name") or "Unnamed hospital"
+            best, best_dist = {"name": name, "lat": el_lat, "lon": el_lon}, dist
+    return best
 
 
 def _osrm_route(from_lat: float, from_lon: float, to_lat: float, to_lon: float) -> dict | None:
@@ -1410,16 +1426,11 @@ async def seed_ner_hospitals() -> None:
                 f"[out:json][timeout:60];(node[\"amenity\"=\"hospital\"]({south},{west},{north},{east});"
                 f"way[\"amenity\"=\"hospital\"]({south},{west},{north},{east}););out center 3000;"
             )
-            response = await asyncio.to_thread(
-                httpx.post,
-                "https://overpass-api.de/api/interpreter",
-                data={"data": query},
-                headers={"User-Agent": "NER-SHIELD/1.0 (landslide early-warning system; SIH 2026)", "Accept": "application/json"},
-                timeout=90,
-            )
-            logger.info("NER-wide hospital seed: Overpass responded with HTTP %s", response.status_code)
-            response.raise_for_status()
-            elements = response.json().get("elements", [])
+            body = await asyncio.to_thread(_overpass_post, query, 90)
+            if body is None:
+                logger.error("NER-wide hospital seed: every Overpass mirror failed, will retry next startup")
+                return
+            elements = body.get("elements", [])
             logger.info("NER-wide hospital seed: Overpass returned %d elements", len(elements))
 
             rows = []
