@@ -1383,6 +1383,56 @@ def seed_evacuation_roads() -> None:
         db.commit()
 
 
+async def seed_ner_hospitals() -> None:
+    """One-time bulk fetch of real hospital locations across all eight NER states from
+    OpenStreetMap, cached into `infrastructure` so evacuation-route's hospital lookup never
+    depends on a live Overpass call at request time — only this one background seed does, and
+    only until it succeeds once (checked by hospital count, so a later restart skips it
+    entirely). Runs as a background task rather than blocking startup, since a region-wide
+    Overpass query can take tens of seconds. Real OSM data — just fetched ahead of time
+    instead of live per click, which also sidesteps Overpass's shared-server rate limits
+    during actual usage."""
+    with SessionLocal() as db:
+        existing = db.execute(text("SELECT COUNT(*) FROM infrastructure WHERE kind = 'hospital'")).scalar()
+        if existing and existing > 1:
+            return
+        # Rough bounding box covering all eight North Eastern Region states.
+        south, west, north, east = 22.0, 88.0, 29.5, 97.5
+        query = (
+            f"[out:json][timeout:60];(node[\"amenity\"=\"hospital\"]({south},{west},{north},{east});"
+            f"way[\"amenity\"=\"hospital\"]({south},{west},{north},{east}););out center 3000;"
+        )
+        try:
+            response = await asyncio.to_thread(
+                httpx.post,
+                "https://overpass-api.de/api/interpreter",
+                data={"data": query},
+                headers={"User-Agent": "NER-SHIELD/1.0 (landslide early-warning system; SIH 2026)", "Accept": "application/json"},
+                timeout=90,
+            )
+            response.raise_for_status()
+            elements = response.json().get("elements", [])
+        except (httpx.HTTPError, KeyError, ValueError) as exc:
+            logger.error("NER-wide hospital seed failed (will retry next startup): %r", exc)
+            return
+
+        inserted = 0
+        for el in elements:
+            lat = el.get("lat") or el.get("center", {}).get("lat")
+            lon = el.get("lon") or el.get("center", {}).get("lon")
+            if lat is None or lon is None:
+                continue
+            name = el.get("tags", {}).get("name") or "Unnamed hospital"
+            district = el.get("tags", {}).get("addr:district")
+            db.execute(text("""
+                INSERT INTO infrastructure (kind, name, district, geom)
+                VALUES ('hospital', :name, :district, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
+            """), {"name": name, "district": district, "lon": lon, "lat": lat})
+            inserted += 1
+        db.commit()
+        logger.info("Seeded %d real hospitals across NER from OpenStreetMap", inserted)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global loaded_model, monitor_task, shap_explainer, shap_imputer, main_event_loop
@@ -1422,9 +1472,11 @@ async def lifespan(_: FastAPI):
     seed_demo_data()
     seed_infrastructure()
     seed_evacuation_roads()
+    hospital_seed_task = asyncio.create_task(seed_ner_hospitals())
     if MONITOR_ENABLED:
         monitor_task = asyncio.create_task(monitor_loop())
     yield
+    hospital_seed_task.cancel()
     if monitor_task:
         monitor_task.cancel()
 
@@ -1664,9 +1716,20 @@ def evacuation_route(
     # covering the rest of the North Eastern Region.
     destination_name = None
     if to_lat is None or to_lon is None:
-        hospital = _nearest_hospital_overpass(from_lat, from_lon)
+        # Nearest hospital from our own NER-wide cache (see seed_ner_hospitals()) — no live
+        # Overpass call on the request path, so this never depends on that shared public
+        # server being up or not rate-limiting us. Falls back to a live Overpass lookup only
+        # if the cache hasn't populated yet (e.g. right after a fresh deploy).
+        hospital_row = db.execute(text("""
+            SELECT name, ST_Y(geom) AS lat, ST_X(geom) AS lon FROM infrastructure WHERE kind = 'hospital'
+            ORDER BY ST_Distance(geom, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)) LIMIT 1
+        """), {"lat": from_lat, "lon": from_lon}).mappings().first()
+        hospital = (
+            {"name": hospital_row["name"], "lat": hospital_row["lat"], "lon": hospital_row["lon"]}
+            if hospital_row else _nearest_hospital_overpass(from_lat, from_lon)
+        )
         if not hospital:
-            raise HTTPException(404, "No hospital found within 15km via OpenStreetMap — try a location nearer a town.")
+            raise HTTPException(404, "No hospital found nearby — try again shortly, or a location nearer a town.")
         to_lat, to_lon, destination_name = hospital["lat"], hospital["lon"], hospital["name"]
 
     osrm_result = _osrm_route(from_lat, from_lon, to_lat, to_lon)
