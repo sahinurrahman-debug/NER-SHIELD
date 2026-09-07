@@ -791,6 +791,72 @@ def _nearest_node(graph: nx.Graph, lon: float, lat: float) -> tuple[tuple[float,
     return best, best_dist
 
 
+# Within this radius of the seeded East Khasi Hills demo network, evacuation-route uses the
+# local Dijkstra graph (real blocked-road simulation, live-reroutable). Beyond it — i.e.
+# everywhere else in the North Eastern Region — it falls back to real routing over actual
+# OpenStreetMap road data, so the planner works region-wide rather than only for one town.
+LOCAL_GRAPH_COVERAGE_KM = 5.0
+
+
+def _nearest_hospital_overpass(lat: float, lon: float, radius_km: float = 15.0) -> dict | None:
+    """Finds the nearest real hospital via OpenStreetMap's Overpass API — used whenever the
+    requested point falls outside the small seeded local road network, so evacuation routing
+    works anywhere in NER (or beyond), not just the East Khasi Hills demo area. Returns None
+    on any failure or empty result; never raises, so callers can give an honest 404 instead
+    of a fabricated destination."""
+    query = (
+        f'[out:json][timeout:12];(node["amenity"="hospital"](around:{int(radius_km * 1000)},{lat},{lon});'
+        f'way["amenity"="hospital"](around:{int(radius_km * 1000)},{lat},{lon}););out center 10;'
+    )
+    try:
+        response = httpx.post("https://overpass-api.de/api/interpreter", data={"data": query}, timeout=15)
+        response.raise_for_status()
+        best, best_dist = None, float("inf")
+        for el in response.json().get("elements", []):
+            el_lat = el.get("lat") or el.get("center", {}).get("lat")
+            el_lon = el.get("lon") or el.get("center", {}).get("lon")
+            if el_lat is None or el_lon is None:
+                continue
+            dist = _haversine_km(lon, lat, el_lon, el_lat)
+            if dist < best_dist:
+                name = el.get("tags", {}).get("name") or "Unnamed hospital"
+                best, best_dist = {"name": name, "lat": el_lat, "lon": el_lon}, dist
+        return best
+    except (httpx.HTTPError, KeyError, ValueError):
+        return None
+
+
+def _osrm_route(from_lat: float, from_lon: float, to_lat: float, to_lon: float) -> dict | None:
+    """Real driving directions from OSRM's public routing API, over actual OpenStreetMap road
+    data — the region-wide fallback outside the seeded local demo graph. Returns None on any
+    failure (including OSRM finding no route) rather than raising, so callers can surface an
+    honest error instead of a fabricated route."""
+    try:
+        response = httpx.get(
+            f"https://router.project-osrm.org/route/v1/driving/{from_lon},{from_lat};{to_lon},{to_lat}",
+            params={"overview": "full", "geometries": "geojson", "steps": "true"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        body = response.json()
+        if body.get("code") != "Ok" or not body.get("routes"):
+            return None
+        route = body["routes"][0]
+        roads_used: list[str] = []
+        for leg in route.get("legs", []):
+            for step in leg.get("steps", []):
+                name = step.get("name") or ""
+                if name and name not in roads_used:
+                    roads_used.append(name)
+        return {
+            "distance_km": round(route["distance"] / 1000, 2),
+            "path": route["geometry"]["coordinates"],
+            "roads_used": roads_used or ["(unnamed roads)"],
+        }
+    except (httpx.HTTPError, KeyError, ValueError, IndexError):
+        return None
+
+
 def upsert_risk_cell(
     db: Session, *, latitude: float, longitude: float, district: str | None,
     slope_deg: float, rain_24h_mm: float, soil_moisture_pct: float,
@@ -1508,55 +1574,84 @@ def evacuation_route(
     from_lat: float, from_lon: float, to_lat: float | None = None, to_lon: float | None = None,
     db: Session = Depends(get_db),
 ):
-    """Shortest safe route from a point to a destination (nearest hospital by default),
-    computed with Dijkstra's algorithm over the seeded local road network — blocked roads
-    are excluded entirely, partial-block roads are used only if no clear alternative exists.
-    This is a real, general-purpose routing algorithm, not a hardcoded path: it recomputes
-    from live road status every call, so marking a road blocked changes the answer."""
+    """Shortest safe route from a point to a destination (nearest hospital by default).
+    Two engines, chosen by location: within ~5km of the seeded East Khasi Hills demo network,
+    a real Dijkstra search over that locally-simulated road graph — blocked roads excluded
+    entirely, live-reroutable (marking a road blocked changes the answer on the next call).
+    Anywhere else in the North Eastern Region (or beyond), a real driving route from OSRM over
+    actual OpenStreetMap road data to the nearest real hospital found via Overpass — so the
+    planner covers the whole region, not just the one demo town, while keeping the richer
+    live-reroute demo where road-block status is actually modeled."""
     graph = build_road_graph(db)
-    if graph.number_of_nodes() == 0:
-        raise HTTPException(404, "No usable road network right now — every seeded road is blocked.")
+    start_node, start_snap_km = (None, float("inf"))
+    if graph.number_of_nodes() > 0:
+        start_node, start_snap_km = _nearest_node(graph, from_lon, from_lat)
 
+    if graph.number_of_nodes() > 0 and start_snap_km <= LOCAL_GRAPH_COVERAGE_KM:
+        destination_name = None
+        if to_lat is None or to_lon is None:
+            hospital = db.execute(text("""
+                SELECT name, ST_Y(geom) AS lat, ST_X(geom) AS lon FROM infrastructure WHERE kind = 'hospital'
+                ORDER BY ST_Distance(geom, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)) LIMIT 1
+            """), {"lat": from_lat, "lon": from_lon}).mappings().first()
+            if hospital:
+                to_lat, to_lon, destination_name = hospital["lat"], hospital["lon"], hospital["name"]
+
+        if to_lat is not None and to_lon is not None:
+            end_node, _ = _nearest_node(graph, to_lon, to_lat)
+            try:
+                path = nx.shortest_path(graph, start_node, end_node, weight="weight")
+            except nx.NetworkXNoPath:
+                raise HTTPException(404, "No route avoids the currently blocked roads — every path is cut off.")
+
+            roads_used: list[str] = []
+            used_partial_block: list[str] = []
+            total_km = 0.0
+            for a, b in zip(path, path[1:]):
+                edge = graph[a][b]
+                total_km += edge["distance_km"]
+                if edge["name"] not in roads_used:
+                    roads_used.append(edge["name"])
+                if edge["status"] == "partial_block" and edge["name"] not in used_partial_block:
+                    used_partial_block.append(edge["name"])
+
+            return {
+                "distance_km": round(total_km, 2),
+                "path": [[lon, lat] for lon, lat in path],
+                "roads_used": roads_used,
+                "destination": destination_name,
+                "used_partial_block_roads": used_partial_block,
+                "start_snapped_km": round(start_snap_km, 3),
+                "note": (
+                    "Computed from the seeded local road network (a handful of segments near "
+                    "East Khasi Hills) — real Dijkstra search, live-reroutable: blocked roads are "
+                    "excluded entirely, partial-block roads used only if no clear alternative exists."
+                ),
+            }
+
+    # Outside the seeded demo network — real routing over actual OpenStreetMap road data,
+    # covering the rest of the North Eastern Region.
     destination_name = None
     if to_lat is None or to_lon is None:
-        hospital = db.execute(text("""
-            SELECT name, ST_Y(geom) AS lat, ST_X(geom) AS lon FROM infrastructure WHERE kind = 'hospital'
-            ORDER BY ST_Distance(geom, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)) LIMIT 1
-        """), {"lat": from_lat, "lon": from_lon}).mappings().first()
+        hospital = _nearest_hospital_overpass(from_lat, from_lon)
         if not hospital:
-            raise HTTPException(404, "No hospital in the infrastructure layer to route to.")
+            raise HTTPException(404, "No hospital found within 15km via OpenStreetMap — try a location nearer a town.")
         to_lat, to_lon, destination_name = hospital["lat"], hospital["lon"], hospital["name"]
 
-    start_node, start_snap_km = _nearest_node(graph, from_lon, from_lat)
-    end_node, _ = _nearest_node(graph, to_lon, to_lat)
-
-    try:
-        path = nx.shortest_path(graph, start_node, end_node, weight="weight")
-    except nx.NetworkXNoPath:
-        raise HTTPException(404, "No route avoids the currently blocked roads — every path is cut off.")
-
-    roads_used: list[str] = []
-    used_partial_block: list[str] = []
-    total_km = 0.0
-    for a, b in zip(path, path[1:]):
-        edge = graph[a][b]
-        total_km += edge["distance_km"]
-        if edge["name"] not in roads_used:
-            roads_used.append(edge["name"])
-        if edge["status"] == "partial_block" and edge["name"] not in used_partial_block:
-            used_partial_block.append(edge["name"])
+    osrm_result = _osrm_route(from_lat, from_lon, to_lat, to_lon)
+    if not osrm_result:
+        raise HTTPException(503, "Routing service unavailable right now — try again shortly.")
 
     return {
-        "distance_km": round(total_km, 2),
-        "path": [[lon, lat] for lon, lat in path],
-        "roads_used": roads_used,
+        "distance_km": osrm_result["distance_km"],
+        "path": osrm_result["path"],
+        "roads_used": osrm_result["roads_used"],
         "destination": destination_name,
-        "used_partial_block_roads": used_partial_block,
-        "start_snapped_km": round(start_snap_km, 3),
+        "used_partial_block_roads": [],
+        "start_snapped_km": 0.0,
         "note": (
-            "Computed from the seeded local road network only (a handful of segments near "
-            "East Khasi Hills), not a full regional road graph. Blocked roads are excluded "
-            "entirely; partial-block roads are used only if no clear alternative exists."
+            "Real driving route via OpenStreetMap/OSRM — live road-block simulation is only "
+            "modeled for the East Khasi Hills demo area, not this location."
         ),
     }
 
