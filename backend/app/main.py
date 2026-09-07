@@ -1922,7 +1922,8 @@ def outlook(district: str, db: Session = Depends(get_db)):
     if len(rows) < 2:
         return {
             "district": district, "probability": round(latest.risk_score / 100, 4), "severity": latest.severity,
-            "trend_per_day": None, "days_to_critical": None,
+            "trend_per_day": None,
+            "days_to_critical": 0.0 if latest.risk_score >= 75 else None,
             "note": "Only one reading so far — need at least two over time to estimate a trend.",
         }
 
