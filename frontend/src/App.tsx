@@ -507,125 +507,124 @@ export default function App() {
         {!ndviResult && !ndviBusy && <p>Pick a risk cell and click Analyze to pull real Sentinel-2 imagery for it.</p>}
       </section>
 
-      <section className="layout">
-        <div className="table-wrap">
-          <h2 className="panel-title"><span className="dot" />Emergency response prioritisation</h2>
-          <div className="table-scroll">
-            <table className="priority-table">
-              <thead><tr><th>District</th><th>Severity</th><th>Risk score</th><th>Nearby infra</th><th>Population at risk</th><th>Priority score</th></tr></thead>
-              <tbody>
-                {priorities.map((p) => (
-                  <tr key={p.cell_id} className={p.severity}>
-                    <td>{p.district}</td><td>{p.severity}</td><td>{p.risk_score}</td>
-                    <td>{p.nearby_infrastructure}</td>
-                    <td>{p.population_at_risk > 0 ? `~${p.population_at_risk.toLocaleString()}` : "—"}</td>
-                    <td>{p.priority_score}</td>
-                  </tr>
-                ))}
-                {priorities.length === 0 && <tr><td colSpan={6}>No risk cells yet.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-          <p className="forecast-note">Population figures are approximate named-settlement estimates, not live census data.</p>
+      <section className="table-wrap">
+        <h2 className="panel-title"><span className="dot" />Emergency response prioritisation</h2>
+        <div className="table-scroll">
+          <table className="priority-table">
+            <thead><tr><th>District</th><th>Severity</th><th>Risk score</th><th>Nearby infra</th><th>Population at risk</th><th>Priority score</th></tr></thead>
+            <tbody>
+              {priorities.map((p) => (
+                <tr key={p.cell_id} className={p.severity}>
+                  <td>{p.district}</td><td>{p.severity}</td><td>{p.risk_score}</td>
+                  <td>{p.nearby_infrastructure}</td>
+                  <td>{p.population_at_risk > 0 ? `~${p.population_at_risk.toLocaleString()}` : "—"}</td>
+                  <td>{p.priority_score}</td>
+                </tr>
+              ))}
+              {priorities.length === 0 && <tr><td colSpan={6}>No risk cells yet.</td></tr>}
+            </tbody>
+          </table>
         </div>
-        <aside className="secondary-aside">
-          <div className="sub-panel">
-            <h2 className="panel-title"><span className="dot" />Evacuation route planner</h2>
-            <p className="forecast-note">
-              Click anywhere on the map to plan the shortest route to the nearest hospital — a real
-              Dijkstra shortest-path search over the local road network. Blocked roads are excluded
-              entirely; the route reroutes live if a road's status changes.
-            </p>
-            {evacBusy && <p>Computing route…</p>}
-            {evacError && <p className="error">{evacError}</p>}
-            {evacRoute && (
-              <div className="evac-result">
-                <div className="outlook-main">
-                  <div className="outlook-probability">
-                    <strong>{evacRoute.distance_km} km</strong>
-                    <span>to {evacRoute.destination ?? "destination"}</span>
-                  </div>
-                  {evacRoute.used_partial_block_roads.length > 0 && (
-                    <span className="alert-status simulated">uses restricted road</span>
-                  )}
+        <p className="forecast-note">Population figures are approximate named-settlement estimates, not live census data.</p>
+      </section>
+
+      <section className="secondary-grid">
+        <div className="sub-panel">
+          <h2 className="panel-title"><span className="dot" />Evacuation route planner</h2>
+          <p className="forecast-note">
+            Click anywhere on the map to plan the shortest route to the nearest hospital — a real
+            Dijkstra shortest-path search over the local road network. Blocked roads are excluded
+            entirely; the route reroutes live if a road's status changes.
+          </p>
+          {evacBusy && <p>Computing route…</p>}
+          {evacError && <p className="error">{evacError}</p>}
+          {evacRoute && (
+            <div className="evac-result">
+              <div className="outlook-main">
+                <div className="outlook-probability">
+                  <strong>{evacRoute.distance_km} km</strong>
+                  <span>to {evacRoute.destination ?? "destination"}</span>
                 </div>
-                <p className="forecast-note">Via: {evacRoute.roads_used.join(" → ")}</p>
                 {evacRoute.used_partial_block_roads.length > 0 && (
-                  <p className="forecast-note critical-text">
-                    Caution: route includes a partially blocked segment ({evacRoute.used_partial_block_roads.join(", ")}) — no clearer path was available.
-                  </p>
+                  <span className="alert-status simulated">uses restricted road</span>
                 )}
-                <p className="forecast-note">{evacRoute.note}</p>
               </div>
-            )}
-          </div>
-          <div className="sub-panel outlook-panel">
-            <h2 className="panel-title"><span className="dot" />Risk probability &amp; outlook</h2>
-            <div className="forecast-controls">
-              <select value={forecastDistrict} onChange={(e) => setForecastDistrict(e.target.value)}>
-                {districts.map((s) => (
-                  <optgroup key={s.state} label={s.state}>
-                    {s.districts.map((d) => <option key={d} value={d}>{d}</option>)}
-                  </optgroup>
-                ))}
-              </select>
-              <button onClick={loadForecast}>Load</button>
-            </div>
-            <p className="forecast-note">
-              Covers all North Eastern Region districts — only a few have seeded demo data
-              today, every other district works via a live prediction or field report.
-            </p>
-            {outlook && (
-              <div className="outlook-body">
-                <div className="outlook-main">
-                  <div className="outlook-probability">
-                    <strong>{outlook.probability !== null ? `${Math.round(outlook.probability * 100)}%` : "—"}</strong>
-                    <span>predicted probability</span>
-                  </div>
-                  {outlook.severity && (
-                    <span className={`alert-status severity-badge ${outlook.severity}`}>{outlook.severity}</span>
-                  )}
-                </div>
-                <div className="outlook-days">
-                  {outlook.days_to_critical === null && <span>No clear worsening trend toward critical yet.</span>}
-                  {outlook.days_to_critical === 0 && <span className="critical-text">Already at or above critical.</span>}
-                  {outlook.days_to_critical !== null && outlook.days_to_critical > 0 && (
-                    <span>Estimated <b>{outlook.days_to_critical}</b> day(s) to critical at current trend.</span>
-                  )}
-                </div>
-                <p className="forecast-note">{outlook.note}</p>
-              </div>
-            )}
-            {!outlook && <p>Enter a district and click Load.</p>}
-          </div>
-          <div className="sub-panel">
-            <h2 className="panel-title"><span className="dot" />Weather-linked risk forecast</h2>
-            {forecastNote && <p className="forecast-note">{forecastNote}</p>}
-            {forecastPoints.map((point, i) => (
-              <div className={`forecast-point ${point.severity}`} key={i}>
-                <b>{point.risk_score}%</b> · {point.severity} · {point.rain_24h_mm.toFixed(0)}mm rain · {point.source}
-                <small> {new Date(point.created_at).toLocaleString()}</small>
-              </div>
-            ))}
-            {forecastPoints.length === 0 && <p>No readings logged for this district yet — submit a prediction with a district set first.</p>}
-          </div>
-          <div className="sub-panel">
-            <h2 className="panel-title"><span className="dot" />Recent field reports</h2>
-            {reports.length === 0 && <p>No reports yet.</p>}
-            {reports.map((report) => <article className="report" key={report.id}>
-              <b>{report.severity.toUpperCase()} · {report.report_type.replace("_", " ")}</b>
-              <p>{report.description}</p><small>{report.district ?? "Unknown district"} · {report.road_status ?? "road status not set"}</small>
-              {report.trust_score !== null && (
-                <div className="trust-row" title={report.trust_flags ?? ""}>
-                  <span className={`trust-badge ${report.trust_score >= 70 ? "trust-high" : report.trust_score >= 40 ? "trust-medium" : "trust-low"}`}>
-                    Photo trust {report.trust_score}%
-                  </span>
-                  {report.trust_flags && <small className="trust-flags">{report.trust_flags}</small>}
-                </div>
+              <p className="forecast-note">Via: {evacRoute.roads_used.join(" → ")}</p>
+              {evacRoute.used_partial_block_roads.length > 0 && (
+                <p className="forecast-note critical-text">
+                  Caution: route includes a partially blocked segment ({evacRoute.used_partial_block_roads.join(", ")}) — no clearer path was available.
+                </p>
               )}
-            </article>)}
+              <p className="forecast-note">{evacRoute.note}</p>
+            </div>
+          )}
+        </div>
+        <div className="sub-panel outlook-panel">
+          <h2 className="panel-title"><span className="dot" />Risk probability &amp; outlook</h2>
+          <div className="forecast-controls">
+            <select value={forecastDistrict} onChange={(e) => setForecastDistrict(e.target.value)}>
+              {districts.map((s) => (
+                <optgroup key={s.state} label={s.state}>
+                  {s.districts.map((d) => <option key={d} value={d}>{d}</option>)}
+                </optgroup>
+              ))}
+            </select>
+            <button onClick={loadForecast}>Load</button>
           </div>
-        </aside>
+          <p className="forecast-note">
+            Covers all North Eastern Region districts — only a few have seeded demo data
+            today, every other district works via a live prediction or field report.
+          </p>
+          {outlook && (
+            <div className="outlook-body">
+              <div className="outlook-main">
+                <div className="outlook-probability">
+                  <strong>{outlook.probability !== null ? `${Math.round(outlook.probability * 100)}%` : "—"}</strong>
+                  <span>predicted probability</span>
+                </div>
+                {outlook.severity && (
+                  <span className={`alert-status severity-badge ${outlook.severity}`}>{outlook.severity}</span>
+                )}
+              </div>
+              <div className="outlook-days">
+                {outlook.days_to_critical === null && <span>No clear worsening trend toward critical yet.</span>}
+                {outlook.days_to_critical === 0 && <span className="critical-text">Already at or above critical.</span>}
+                {outlook.days_to_critical !== null && outlook.days_to_critical > 0 && (
+                  <span>Estimated <b>{outlook.days_to_critical}</b> day(s) to critical at current trend.</span>
+                )}
+              </div>
+              <p className="forecast-note">{outlook.note}</p>
+            </div>
+          )}
+          {!outlook && <p>Enter a district and click Load.</p>}
+        </div>
+        <div className="sub-panel">
+          <h2 className="panel-title"><span className="dot" />Weather-linked risk forecast</h2>
+          {forecastNote && <p className="forecast-note">{forecastNote}</p>}
+          {forecastPoints.map((point, i) => (
+            <div className={`forecast-point ${point.severity}`} key={i}>
+              <b>{point.risk_score}%</b> · {point.severity} · {point.rain_24h_mm.toFixed(0)}mm rain · {point.source}
+              <small> {new Date(point.created_at).toLocaleString()}</small>
+            </div>
+          ))}
+          {forecastPoints.length === 0 && <p>No readings logged for this district yet — submit a prediction with a district set first.</p>}
+        </div>
+        <div className="sub-panel">
+          <h2 className="panel-title"><span className="dot" />Recent field reports</h2>
+          {reports.length === 0 && <p>No reports yet.</p>}
+          {reports.map((report) => <article className="report" key={report.id}>
+            <b>{report.severity.toUpperCase()} · {report.report_type.replace("_", " ")}</b>
+            <p>{report.description}</p><small>{report.district ?? "Unknown district"} · {report.road_status ?? "road status not set"}</small>
+            {report.trust_score !== null && (
+              <div className="trust-row" title={report.trust_flags ?? ""}>
+                <span className={`trust-badge ${report.trust_score >= 70 ? "trust-high" : report.trust_score >= 40 ? "trust-medium" : "trust-low"}`}>
+                  Photo trust {report.trust_score}%
+                </span>
+                {report.trust_flags && <small className="trust-flags">{report.trust_flags}</small>}
+              </div>
+            )}
+          </article>)}
+        </div>
       </section>
     </main>
   );

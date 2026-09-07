@@ -58,11 +58,12 @@ h1 { font-size: 1.9rem; margin: 0; line-height: 1; letter-spacing: -0.01em; back
 .card.high, .road-partial_block { border-color: #f97316; } .card.high strong { color: #fdba74; }
 .card.critical, .road-blocked { border-color: #dc2626; } .card.critical strong { color: #fca5a5; }
 
-/* --- Secondary section: prioritisation table + reports/forecast --- */
-.layout { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start; margin-top: 24px; }
-.table-wrap { background: #1e293b; border-radius: 14px; padding: 18px; box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
+/* --- Secondary section: prioritisation table (full width), then a balanced 2x2 grid of
+   reports/forecast panels below it — kept as separate stacked sections rather than a
+   2fr/1fr row so a short table never leaves a tall empty gap beside a taller sidebar. --- */
+.table-wrap { background: #1e293b; border-radius: 14px; padding: 18px; box-shadow: 0 6px 20px rgba(0,0,0,0.3); margin-top: 24px; }
 .table-scroll { max-height: 320px; overflow: auto; }
-.secondary-aside { display: flex; flex-direction: column; gap: 16px; }
+.secondary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 24px; }
 .sub-panel { background: #1e293b; border-radius: 14px; padding: 18px; box-shadow: 0 6px 20px rgba(0,0,0,0.3); max-height: 320px; overflow-y: auto; }
 .report { border-bottom: 1px solid #334155; padding: 12px 0; } .report:last-child { border-bottom: none; } .report p { margin: 6px 0; }
 
@@ -123,7 +124,7 @@ h1 { font-size: 1.9rem; margin: 0; line-height: 1; letter-spacing: -0.01em; back
 
 @media (max-width: 900px) {
   .hero { grid-template-columns: 1fr; } .hero-map .map { height: 420px; } .hero-alerts { max-height: 320px; }
-  .stat-strip { grid-template-columns: 1fr; } .cards, .layout { grid-template-columns: 1fr; }
+  .stat-strip { grid-template-columns: 1fr; } .cards, .secondary-grid { grid-template-columns: 1fr; }
   .shap-inputs { grid-template-columns: 1fr 1fr; }
   .shap-row { grid-template-columns: 110px 1fr 50px; }
 }
