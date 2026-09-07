@@ -89,7 +89,6 @@ export default function App() {
   const [error, setError] = useState("");
   const [forecastDistrict, setForecastDistrict] = useState("East Khasi Hills");
   const [forecastPoints, setForecastPoints] = useState<ForecastPoint[]>([]);
-  const [forecastNote, setForecastNote] = useState("");
   const [outlook, setOutlook] = useState<Outlook | null>(null);
   const [shapInputs, setShapInputs] = useState({ Rainfall_mm: 150, Slope_Angle: 40, Soil_Saturation: 0.5, Vegetation_Cover: 0.5 });
   const [predictResult, setPredictResult] = useState<PredictResponse | null>(null);
@@ -179,7 +178,7 @@ export default function App() {
 
   function loadForecast() {
     getForecast(forecastDistrict)
-      .then((data) => { setForecastPoints(data.points); setForecastNote(data.note); })
+      .then((data) => setForecastPoints(data.points))
       .catch((err: Error) => setError(err.message));
     getOutlook(forecastDistrict)
       .then(setOutlook)
