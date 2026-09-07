@@ -6,7 +6,7 @@ import { CircleMarker } from "leaflet";
 import type { Map as LeafletMap, PathOptions } from "leaflet";
 import {
   getAlerts, getDistricts, getEvacuationRoute, getForecast, getInfrastructure, getNdviChange, getOutlook,
-  getPriorities, getReports, getRiskCells, getRoadStatus, getSummary, getWsUrl, imageUrl, runPrediction,
+  getPriorities, getReports, getRiskCells, getRoadStatus, getWsUrl, imageUrl, runPrediction,
   type Alert, type DistrictsResponse, type EvacuationRoute, type Feature as RiskFeature, type ForecastPoint,
   type InfraFeature, type LiveMessage, type NdviChange, type Outlook, type PredictResponse, type Priority, type Report,
 } from "./api";
@@ -86,7 +86,6 @@ export default function App() {
   const [infra, setInfra] = useState<InfraFeature[]>([]);
   const [roadCounts, setRoadCounts] = useState<Record<string, number>>({});
   const [priorities, setPriorities] = useState<Priority[]>([]);
-  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [forecastDistrict, setForecastDistrict] = useState("East Khasi Hills");
   const [forecastPoints, setForecastPoints] = useState<ForecastPoint[]>([]);
@@ -118,9 +117,8 @@ export default function App() {
   }, [cells]);
 
   useEffect(() => {
-    Promise.all([getSummary(), getRiskCells(), getReports(), getAlerts(), getInfrastructure(), getRoadStatus(), getPriorities()])
-      .then(([summary, cellsResponse, reportsResponse, alertsResponse, infraResponse, roadStatusResponse, prioritiesResponse]) => {
-        setNotice(summary.demo_notice);
+    Promise.all([getRiskCells(), getReports(), getAlerts(), getInfrastructure(), getRoadStatus(), getPriorities()])
+      .then(([cellsResponse, reportsResponse, alertsResponse, infraResponse, roadStatusResponse, prioritiesResponse]) => {
         setCells(cellsResponse.features);
         setReports(reportsResponse);
         setAlerts(alertsResponse);
@@ -237,17 +235,18 @@ export default function App() {
   return (
     <main>
       <header>
-        <div className="brand">
-          <img src="/logo-mark.svg" alt="" className="brand-logo" width={50} height={50} />
-          <div><h1>NER-SHIELD</h1><p>NER landslide decision-support dashboard</p></div>
+        <div className="header-top">
+          <div className="brand">
+            <img src="/logo-mark.svg" alt="" className="brand-logo" width={50} height={50} />
+            <h1>NER-SHIELD</h1>
+          </div>
+          <div className="header-right">
+            <span className={`live-dot ${wsConnected ? "" : "offline"}`} title={wsConnected ? "Live WebSocket connected" : "Reconnecting…"} />
+            <span className="live-label">{wsConnected ? "LIVE" : "RECONNECTING"}</span>
+          </div>
         </div>
-        <div className="header-right">
-          <span className={`live-dot ${wsConnected ? "" : "offline"}`} title={wsConnected ? "Live WebSocket connected" : "Reconnecting…"} />
-          <span className="live-label">{wsConnected ? "LIVE" : "RECONNECTING"}</span>
-          
-        </div>
+        <p className="brand-subtitle">NER landslide decision-support dashboard</p>
       </header>
-      {notice && <p className="notice">{notice}</p>}
       {error && <p className="error">{error}. Is the API running on port 8000?</p>}
 
       <section className="hero">

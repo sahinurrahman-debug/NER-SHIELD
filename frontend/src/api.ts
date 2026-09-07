@@ -31,12 +31,6 @@ export async function getDistricts() {
   return response.json() as Promise<DistrictsResponse>;
 }
 
-export async function getSummary() {
-  const response = await fetch(`${API}/api/v1/summary`);
-  if (!response.ok) throw new Error("Could not load dashboard summary");
-  return response.json() as Promise<{ risk_counts: Record<string, number>; demo_notice: string }>;
-}
-
 export async function getRiskCells() {
   const response = await fetch(`${API}/api/v1/risk-cells`);
   if (!response.ok) throw new Error("Could not load risk cells");
