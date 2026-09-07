@@ -11,6 +11,87 @@ import 'strings.dart';
 
 const apiBaseUrl = 'https://ner-shield-api.onrender.com';
 
+// Brand palette — matches the web dashboard's dark slate + amber identity exactly
+// (see frontend/src/index.css) rather than a generic Material-You seed colour.
+const brandBackground = Color(0xFF0F172A);
+const brandSurface = Color(0xFF1E293B);
+const brandSurfaceAlt = Color(0xFF16202F);
+const brandBorder = Color(0xFF334155);
+const brandAmber = Color(0xFFF59E0B);
+const brandAmberDark = Color(0xFFD97706);
+const brandTextPrimary = Color(0xFFE2E8F0);
+const brandTextMuted = Color(0xFF94A3B8);
+const brandOnAmber = Color(0xFF111827);
+const brandDanger = Color(0xFFEF4444);
+
+// The same shield-and-cracked-mountain mark used for the web favicon/app icons
+// (see frontend/public/logo-mark.svg), redrawn as vector paths so it renders crisp
+// at any size with no bundled image asset.
+class NerShieldLogo extends StatelessWidget {
+  final double size;
+  const NerShieldLogo({super.key, this.size = 32});
+
+  @override
+  Widget build(BuildContext context) =>
+      SizedBox(width: size, height: size, child: CustomPaint(painter: _ShieldPainter()));
+}
+
+class _ShieldPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scale = size.width / 1024;
+    canvas.scale(scale);
+
+    final shieldPath = Path()
+      ..moveTo(170, 190)
+      ..lineTo(854, 190)
+      ..cubicTo(930, 260, 930, 190, 930, 480)
+      ..cubicTo(930, 700, 760, 850, 512, 950)
+      ..cubicTo(94, 700, 264, 850, 94, 480)
+      ..cubicTo(94, 190, 94, 260, 170, 190)
+      ..close();
+
+    final shieldPaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [brandAmber, brandAmberDark],
+      ).createShader(const Rect.fromLTWH(0, 0, 1024, 1024));
+    canvas.drawPath(shieldPath, shieldPaint);
+    canvas.drawPath(
+      shieldPath,
+      Paint()
+        ..color = brandBackground
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 10
+        ..strokeJoin = StrokeJoin.round,
+    );
+
+    final mountainPath = Path()
+      ..moveTo(280, 690)
+      ..lineTo(432, 448)
+      ..lineTo(526, 576)
+      ..lineTo(612, 428)
+      ..lineTo(784, 690)
+      ..close();
+    canvas.drawPath(mountainPath, Paint()..color = const Color(0xFFF8FAFC));
+
+    final crackPath = Path()
+      ..moveTo(526, 576)
+      ..lineTo(488, 632)
+      ..lineTo(536, 660)
+      ..lineTo(464, 732)
+      ..lineTo(512, 680)
+      ..lineTo(472, 660)
+      ..lineTo(526, 600)
+      ..close();
+    canvas.drawPath(crackPath, Paint()..color = brandBackground);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
 void main() => runApp(const NerShieldApp());
 
 class NerShieldApp extends StatefulWidget {
@@ -40,10 +121,92 @@ class _NerShieldAppState extends State<NerShieldApp> {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'NER-SHIELD',
-    theme: ThemeData(colorSchemeSeed: Colors.orange, useMaterial3: true),
+    theme: buildBrandTheme(),
     home: HomeShell(language: language, onLanguageChanged: setLanguage),
   );
 }
+
+// Deliberately matches the web dashboard's dark slate + amber identity (see the brand*
+// constants above) instead of Flutter's auto-generated Material-You tonal palette from a
+// seed colour, which reads as generic rather than a specific, designed brand.
+ThemeData buildBrandTheme() => ThemeData(
+  useMaterial3: true,
+  brightness: Brightness.dark,
+  scaffoldBackgroundColor: brandBackground,
+  colorScheme: const ColorScheme.dark(
+    primary: brandAmber,
+    onPrimary: brandOnAmber,
+    secondary: brandAmberDark,
+    onSecondary: brandOnAmber,
+    surface: brandSurface,
+    onSurface: brandTextPrimary,
+    error: brandDanger,
+  ),
+  appBarTheme: const AppBarTheme(
+    backgroundColor: brandBackground,
+    foregroundColor: brandTextPrimary,
+    surfaceTintColor: Colors.transparent,
+    elevation: 0,
+    centerTitle: true,
+  ),
+  navigationBarTheme: NavigationBarThemeData(
+    backgroundColor: brandSurface,
+    indicatorColor: brandAmber.withValues(alpha: 0.22),
+    labelTextStyle: WidgetStateProperty.resolveWith(
+      (states) => TextStyle(
+        color: states.contains(WidgetState.selected) ? brandAmber : brandTextMuted,
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+    iconTheme: WidgetStateProperty.resolveWith(
+      (states) => IconThemeData(color: states.contains(WidgetState.selected) ? brandAmber : brandTextMuted),
+    ),
+  ),
+  cardTheme: CardThemeData(
+    color: brandSurface,
+    elevation: 0,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14), side: const BorderSide(color: brandBorder)),
+  ),
+  inputDecorationTheme: InputDecorationTheme(
+    filled: true,
+    fillColor: brandSurfaceAlt,
+    labelStyle: const TextStyle(color: brandTextMuted),
+    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: brandBorder)),
+    enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: brandBorder)),
+    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: brandAmber, width: 2)),
+  ),
+  filledButtonTheme: FilledButtonThemeData(
+    style: FilledButton.styleFrom(
+      backgroundColor: brandAmber,
+      foregroundColor: brandOnAmber,
+      textStyle: const TextStyle(fontWeight: FontWeight.bold),
+      padding: const EdgeInsets.symmetric(vertical: 14),
+    ),
+  ),
+  outlinedButtonTheme: OutlinedButtonThemeData(
+    style: OutlinedButton.styleFrom(
+      foregroundColor: brandTextPrimary,
+      side: const BorderSide(color: brandBorder),
+      padding: const EdgeInsets.symmetric(vertical: 12),
+    ),
+  ),
+  popupMenuTheme: PopupMenuThemeData(color: brandSurface, surfaceTintColor: Colors.transparent),
+  dropdownMenuTheme: DropdownMenuThemeData(
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: brandSurfaceAlt,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: brandBorder)),
+    ),
+  ),
+  textTheme: const TextTheme(bodyMedium: TextStyle(color: brandTextPrimary)).apply(
+    bodyColor: brandTextPrimary,
+    displayColor: brandTextPrimary,
+  ),
+  iconTheme: const IconThemeData(color: brandTextPrimary),
+  dividerColor: brandBorder,
+  listTileTheme: const ListTileThemeData(iconColor: brandTextMuted, textColor: brandTextPrimary),
+);
 
 class HomeShell extends StatefulWidget {
   final String language;
@@ -61,7 +224,17 @@ class _HomeShellState extends State<HomeShell> {
     final lang = widget.language;
     return Scaffold(
       appBar: AppBar(
-        title: Text(tab == 0 ? t(lang, 'report_appbar') : t(lang, 'alerts_appbar')),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const NerShieldLogo(size: 30),
+            const SizedBox(width: 10),
+            const Text(
+              'NER-SHIELD',
+              style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: -0.3, fontSize: 20),
+            ),
+          ],
+        ),
         actions: [
           PopupMenuButton<String>(
             icon: const Icon(Icons.language),

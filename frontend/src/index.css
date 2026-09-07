@@ -20,7 +20,7 @@ h1 { font-size: 1.9rem; margin: 0; line-height: 1; letter-spacing: -0.01em; back
 .panel-title .dot { width: 10px; height: 10px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 0 5px rgba(245,158,11,0.15); flex-shrink: 0; }
 
 /* --- Hero: map + alerts, the star of the dashboard --- */
-.hero { display: grid; grid-template-columns: 2.3fr 1fr; gap: 16px; margin-top: 20px; }
+.hero { display: grid; grid-template-columns: 2.3fr 1fr; gap: 16px; margin-top: 24px; }
 .map-wrap { background: #1e293b; border-radius: 14px; overflow: hidden; box-shadow: 0 8px 28px rgba(0,0,0,0.35); }
 .hero-map .map { height: 640px; }
 .alerts-panel { background: #1e293b; border-radius: 14px; padding: 18px; box-shadow: 0 8px 28px rgba(0,0,0,0.35); }
@@ -41,7 +41,7 @@ h1 { font-size: 1.9rem; margin: 0; line-height: 1; letter-spacing: -0.01em; back
 .satellite-status.satellite-not_configured { background: #334155; color: #94a3b8; }
 
 /* --- Stat strip: severity + road connectivity, right below the hero --- */
-.stat-strip { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 26px 0; }
+.stat-strip { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 24px 0 0; }
 .stat-group-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: #94a3b8; margin-bottom: 10px; font-weight: 700; }
 .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .card {
@@ -59,7 +59,7 @@ h1 { font-size: 1.9rem; margin: 0; line-height: 1; letter-spacing: -0.01em; back
 .card.critical, .road-blocked { border-color: #dc2626; } .card.critical strong { color: #fca5a5; }
 
 /* --- Secondary section: prioritisation table + reports/forecast --- */
-.layout { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start; }
+.layout { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start; margin-top: 24px; }
 .table-wrap { background: #1e293b; border-radius: 14px; padding: 18px; box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
 .table-scroll { max-height: 320px; overflow: auto; }
 .secondary-aside { display: flex; flex-direction: column; gap: 16px; }
@@ -83,7 +83,7 @@ h1 { font-size: 1.9rem; margin: 0; line-height: 1; letter-spacing: -0.01em; back
 .forecast-controls { display: flex; gap: 8px; margin-bottom: 10px; }
 .forecast-controls input, .forecast-controls select { flex: 1; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 8px; padding: 9px; }
 .forecast-controls button { background: linear-gradient(135deg, #f59e0b, #d97706); border: none; border-radius: 8px; padding: 9px 16px; font-weight: 700; cursor: pointer; color: #111827; }
-.forecast-note { color: #94a3b8; font-size: 0.85rem; }
+.forecast-note { color: #94a3b8; font-size: 0.85rem; margin-top: 10px; }
 .forecast-point { border-bottom: 1px solid #334155; padding: 8px 0; font-size: 0.9rem; }
 .forecast-point:last-child { border-bottom: none; }
 .forecast-point small { display: block; color: #64748b; }
@@ -105,7 +105,7 @@ h1 { font-size: 1.9rem; margin: 0; line-height: 1; letter-spacing: -0.01em; back
 .outlook-days .critical-text { color: #f87171; font-weight: 700; }
 
 /* --- AI explainability panel --- */
-.explainability-panel { max-height: none; margin-bottom: 16px; }
+.explainability-panel { max-height: none; margin-top: 24px; }
 .shap-inputs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 14px 0; }
 .shap-inputs label { display: flex; flex-direction: column; gap: 4px; font-size: 0.7rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
 .shap-inputs input { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 8px; padding: 9px; font-size: 0.95rem; }
@@ -139,7 +139,7 @@ h1 { font-size: 1.9rem; margin: 0; line-height: 1; letter-spacing: -0.01em; back
 .trust-flags { color: #64748b; font-size: 0.78rem; }
 
 /* --- Satellite NDVI vegetation-change panel --- */
-.ndvi-panel { max-height: none; margin-bottom: 16px; }
+.ndvi-panel { max-height: none; margin-top: 24px; }
 .ndvi-panel .forecast-controls select { flex: 1; background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 8px; padding: 9px; }
 .ndvi-panel .forecast-controls button { background: linear-gradient(135deg, #f59e0b, #d97706); border: none; border-radius: 8px; padding: 9px 16px; font-weight: 700; cursor: pointer; color: #111827; white-space: nowrap; }
 .ndvi-panel .forecast-controls button:disabled { opacity: 0.6; cursor: default; }
