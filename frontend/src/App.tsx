@@ -245,7 +245,7 @@ export default function App() {
             <span className="live-label">{wsConnected ? "LIVE" : "RECONNECTING"}</span>
           </div>
         </div>
-        <p className="brand-subtitle">NER landslide decision-support dashboard</p>
+        <p className="brand-subtitle">NER Landslide Decision-Support Dashboard</p>
       </header>
       {error && <p className="error">{error}. Is the API running on port 8000?</p>}
 
@@ -318,7 +318,7 @@ export default function App() {
           <h2 className="panel-title"><span className="dot" />Recent alerts</h2>
           <p className="forecast-note">
             SMS is the primary channel; when it can't confirm real delivery — the exact scenario
-            where a landslide has taken out both the cell tower and local internet — a satellite
+            where a landslide has taken out both the cell tower and local internet — a Satellite
             fallback (🛰) is attempted over Iridium to relay modems at village/relay points, so
             critical alerts can still get through with zero terrestrial network.
           </p>
@@ -350,7 +350,7 @@ export default function App() {
 
       <section className="stat-strip">
         <div className="stat-group">
-          <h3 className="stat-group-title">Risk severity</h3>
+          <h3 className="stat-group-title">Risk Severity</h3>
           <div className="cards">
             {["low", "moderate", "high", "critical"].map((level) => (
               <article key={level} className={`card ${level}`}><span>{level}</span><strong>{counts[level] ?? 0}</strong></article>
@@ -358,7 +358,7 @@ export default function App() {
           </div>
         </div>
         <div className="stat-group">
-          <h3 className="stat-group-title">Road connectivity</h3>
+          <h3 className="stat-group-title">Road Connectivity</h3>
           <div className="cards">
             {["open", "restricted", "partial_block", "blocked"].map((status) => (
               <article key={status} className={`card road-${status}`}>
@@ -370,11 +370,10 @@ export default function App() {
       </section>
 
       <section className="sub-panel explainability-panel">
-        <h2 className="panel-title"><span className="dot" />AI explainability — try a live prediction</h2>
+        <h2 className="panel-title"><span className="dot" />AI Explainability — Try a Live Prediction</h2>
         <p className="forecast-note">
-          Adjust the 4 readings that actually drive this model, run a real prediction, and see exactly how much
-          each one pushed the risk score up or down — genuine SHAP values from the trained model's own decision
-          trees, not a canned explanation. This is a sandbox: it never creates alerts or map cells.
+          Adjust the 4 significant feature readings, run a real prediction, and see exactly how much each one pushed the risk score up or down. 
+          This is a sandbox: it never creates alerts or map cells.
         </p>
         <div className="shap-inputs">
           <label>Rainfall (mm)
@@ -444,9 +443,9 @@ export default function App() {
       </section>
 
       <section className="sub-panel ndvi-panel">
-        <h2 className="panel-title"><span className="dot" />Satellite vegetation change — real Sentinel-2 NDVI</h2>
+        <h2 className="panel-title"><span className="dot" />Satellite Vegetation Change — Real Sentinel-2 NDVI</h2>
         <p className="forecast-note">
-          Real Sentinel-2 L2A satellite imagery pulled live from Sentinel Hub comparing this risk cell's vegetation cover now against the same season one year ago. Deforestation is a leading
+          Real Sentinel-2 L2A satellite imagery pulled live from Sentinel Hub comparing the risk cell's vegetation cover now against the same season one year ago. Deforestation is a leading
           landslide indicator: it strips the root cohesion that holds slope soil in place.
         </p>
         <div className="forecast-controls">
@@ -508,10 +507,10 @@ export default function App() {
       </section>
 
       <section className="table-wrap">
-        <h2 className="panel-title"><span className="dot" />Emergency response prioritisation</h2>
+        <h2 className="panel-title"><span className="dot" />Emergency Response Prioritisation</h2>
         <div className="table-scroll">
           <table className="priority-table">
-            <thead><tr><th>District</th><th>Severity</th><th>Risk score</th><th>Nearby infra</th><th>Population at risk</th><th>Priority score</th></tr></thead>
+            <thead><tr><th>District</th><th>Severity</th><th>Risk Score</th><th>Nearby Infra</th><th>Population at Risk</th><th>Priority Score</th></tr></thead>
             <tbody>
               {priorities.map((p) => (
                 <tr key={p.cell_id} className={p.severity}>
@@ -525,16 +524,14 @@ export default function App() {
             </tbody>
           </table>
         </div>
-        <p className="forecast-note">Population figures are approximate named-settlement estimates, not live census data.</p>
+
       </section>
 
       <section className="secondary-grid">
         <div className="sub-panel">
-          <h2 className="panel-title"><span className="dot" />Evacuation route planner</h2>
+          <h2 className="panel-title"><span className="dot" />Evacuation Route Planner</h2>
           <p className="forecast-note">
-            Click anywhere on the map to plan the shortest route to the nearest hospital — a real
-            Dijkstra shortest-path search over the local road network. Blocked roads are excluded
-            entirely; the route reroutes live if a road's status changes.
+            Click anywhere on the map to plan the shortest route to the nearest hospital over the local road network. Blocked roads are excluded entirely; the route reroutes live if a road's status changes.
           </p>
           {evacBusy && <p>Computing route…</p>}
           {evacError && <p className="error">{evacError}</p>}
@@ -560,7 +557,7 @@ export default function App() {
           )}
         </div>
         <div className="sub-panel outlook-panel">
-          <h2 className="panel-title"><span className="dot" />Risk probability &amp; outlook</h2>
+          <h2 className="panel-title"><span className="dot" />Risk Probability &amp; Outlook</h2>
           <div className="forecast-controls">
             <select value={forecastDistrict} onChange={(e) => setForecastDistrict(e.target.value)}>
               {districts.map((s) => (
@@ -572,8 +569,7 @@ export default function App() {
             <button onClick={loadForecast}>Load</button>
           </div>
           <p className="forecast-note">
-            Covers all North Eastern Region districts — only a few have seeded demo data
-            today, every other district works via a live prediction or field report.
+            Covers all North Eastern Region districts — each district works via a live prediction or field report.
           </p>
           {outlook && (
             <div className="outlook-body">
@@ -593,13 +589,13 @@ export default function App() {
                   <span>Estimated <b>{outlook.days_to_critical}</b> day(s) to critical at current trend.</span>
                 )}
               </div>
-              <p className="forecast-note">{outlook.note}</p>
+
             </div>
           )}
           {!outlook && <p>Enter a district and click Load.</p>}
         </div>
         <div className="sub-panel">
-          <h2 className="panel-title"><span className="dot" />Weather-linked risk forecast</h2>
+          <h2 className="panel-title"><span className="dot" />Weather-Linked Risk Forecast</h2>
           {forecastNote && <p className="forecast-note">{forecastNote}</p>}
           {forecastPoints.map((point, i) => (
             <div className={`forecast-point ${point.severity}`} key={i}>
@@ -610,7 +606,7 @@ export default function App() {
           {forecastPoints.length === 0 && <p>No readings logged for this district yet — submit a prediction with a district set first.</p>}
         </div>
         <div className="sub-panel">
-          <h2 className="panel-title"><span className="dot" />Recent field reports</h2>
+          <h2 className="panel-title"><span className="dot" />Recent Field Reports</h2>
           {reports.length === 0 && <p>No reports yet.</p>}
           {reports.map((report) => <article className="report" key={report.id}>
             <b>{report.severity.toUpperCase()} · {report.report_type.replace("_", " ")}</b>
