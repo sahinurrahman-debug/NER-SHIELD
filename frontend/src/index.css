@@ -59,14 +59,23 @@ h1 { font-size: 1.9rem; margin: 0; line-height: 1; letter-spacing: -0.01em; back
 .card.critical, .road-blocked { border-color: #dc2626; } .card.critical strong { color: #fca5a5; }
 
 /* --- Secondary section: prioritisation table + reports/forecast --- */
-.layout { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
-.table-wrap { background: #1e293b; border-radius: 14px; padding: 18px; overflow-x: auto; box-shadow: 0 6px 20px rgba(0,0,0,0.3); }
+.layout { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: stretch; }
+.table-wrap { background: #1e293b; border-radius: 14px; padding: 18px; box-shadow: 0 6px 20px rgba(0,0,0,0.3); display: flex; flex-direction: column; }
+.table-scroll { flex: 1; overflow: auto; min-height: 220px; max-height: 480px; }
 .secondary-aside { display: flex; flex-direction: column; gap: 16px; }
 .sub-panel { background: #1e293b; border-radius: 14px; padding: 18px; box-shadow: 0 6px 20px rgba(0,0,0,0.3); max-height: 320px; overflow-y: auto; }
 .report { border-bottom: 1px solid #334155; padding: 12px 0; } .report:last-child { border-bottom: none; } .report p { margin: 6px 0; }
 
+/* Thin, theme-coloured scrollbars on every scrollable panel — consistent look, no default
+   chunky browser chrome fighting the dark UI. */
+.table-scroll, .sub-panel, .hero-alerts { scrollbar-width: thin; scrollbar-color: #475569 #1e293b; }
+.table-scroll::-webkit-scrollbar, .sub-panel::-webkit-scrollbar, .hero-alerts::-webkit-scrollbar { width: 8px; height: 8px; }
+.table-scroll::-webkit-scrollbar-track, .sub-panel::-webkit-scrollbar-track, .hero-alerts::-webkit-scrollbar-track { background: #1e293b; border-radius: 8px; }
+.table-scroll::-webkit-scrollbar-thumb, .sub-panel::-webkit-scrollbar-thumb, .hero-alerts::-webkit-scrollbar-thumb { background: #475569; border-radius: 8px; }
+.table-scroll::-webkit-scrollbar-thumb:hover, .sub-panel::-webkit-scrollbar-thumb:hover, .hero-alerts::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
 .priority-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-.priority-table th { text-align: left; color: #94a3b8; padding: 8px; border-bottom: 1px solid #334155; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.priority-table th { text-align: left; color: #94a3b8; padding: 8px; border-bottom: 1px solid #334155; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; position: sticky; top: 0; background: #1e293b; z-index: 1; }
 .priority-table td { padding: 8px; border-bottom: 1px solid #16202f; text-transform: capitalize; }
 .priority-table tr:hover td { background: #16213a; }
 .priority-table tr.critical td:nth-child(2) { color: #f87171; font-weight: 700; } .priority-table tr.high td:nth-child(2) { color: #fb923c; font-weight: 700; }

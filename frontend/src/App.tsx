@@ -510,20 +510,22 @@ export default function App() {
       <section className="layout">
         <div className="table-wrap">
           <h2 className="panel-title"><span className="dot" />Emergency response prioritisation</h2>
-          <table className="priority-table">
-            <thead><tr><th>District</th><th>Severity</th><th>Risk score</th><th>Nearby infra</th><th>Population at risk</th><th>Priority score</th></tr></thead>
-            <tbody>
-              {priorities.map((p) => (
-                <tr key={p.cell_id} className={p.severity}>
-                  <td>{p.district}</td><td>{p.severity}</td><td>{p.risk_score}</td>
-                  <td>{p.nearby_infrastructure}</td>
-                  <td>{p.population_at_risk > 0 ? `~${p.population_at_risk.toLocaleString()}` : "—"}</td>
-                  <td>{p.priority_score}</td>
-                </tr>
-              ))}
-              {priorities.length === 0 && <tr><td colSpan={6}>No risk cells yet.</td></tr>}
-            </tbody>
-          </table>
+          <div className="table-scroll">
+            <table className="priority-table">
+              <thead><tr><th>District</th><th>Severity</th><th>Risk score</th><th>Nearby infra</th><th>Population at risk</th><th>Priority score</th></tr></thead>
+              <tbody>
+                {priorities.map((p) => (
+                  <tr key={p.cell_id} className={p.severity}>
+                    <td>{p.district}</td><td>{p.severity}</td><td>{p.risk_score}</td>
+                    <td>{p.nearby_infrastructure}</td>
+                    <td>{p.population_at_risk > 0 ? `~${p.population_at_risk.toLocaleString()}` : "—"}</td>
+                    <td>{p.priority_score}</td>
+                  </tr>
+                ))}
+                {priorities.length === 0 && <tr><td colSpan={6}>No risk cells yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
           <p className="forecast-note">Population figures are approximate named-settlement estimates, not live census data.</p>
         </div>
         <aside className="secondary-aside">
