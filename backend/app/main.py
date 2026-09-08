@@ -1558,86 +1558,6 @@ async def seed_ner_hospitals() -> None:
         logger.error("NER-wide hospital seed failed (will retry next startup): %r", exc, exc_info=True)
 
 
-async def seed_ner_infrastructure() -> None:
-    """One-time bulk fetch of real towns/cities and major roads across all of NER from
-    OpenStreetMap. The original 'village'/'road' infrastructure (a road, two villages) was
-    hand-seeded for East Khasi Hills only, back when this was a single-district demo — every
-    other district's nearby_infrastructure in /api/v1/priorities has been an honest 0 ever
-    since, not because there's no real infrastructure there, but because none was ever fed in.
-    Restricted to cities/towns (not every village — OSM has tens of thousands in NER, which
-    would blow out nearby_infrastructure the same way the 3000 hospitals inflated it before
-    that was excluded) and major roads (motorway/trunk/primary, not every residential street),
-    so counts stay meaningful rather than dominated by density. Runs once in the background,
-    same pattern as seed_ner_hospitals(); skipped on future restarts once populated."""
-    try:
-        logger.info("NER-wide infrastructure seed: starting")
-        with SessionLocal() as db:
-            existing = db.execute(text(
-                "SELECT COUNT(*) FROM infrastructure WHERE kind IN ('road','village') "
-                "AND (district IS NULL OR district != 'East Khasi Hills')"
-            )).scalar()
-            logger.info("NER-wide infrastructure seed: %s existing non-EKH road/village row(s)", existing)
-            if existing and existing > 10:
-                logger.info("NER-wide infrastructure seed: already populated, skipping")
-                return
-
-            south, west, north, east = 22.0, 88.0, 29.5, 97.5
-            query = (
-                f'[out:json][timeout:120];'
-                f'(node["place"~"^(city|town)$"]({south},{west},{north},{east});'
-                f'way["highway"~"^(motorway|trunk|primary)$"]({south},{west},{north},{east}););'
-                f'out center geom;'
-            )
-            body = await asyncio.to_thread(_overpass_post, query, 150)
-            if body is None:
-                logger.error("NER-wide infrastructure seed: every Overpass mirror failed, will retry next startup")
-                return
-            elements = body.get("elements", [])
-            logger.info("NER-wide infrastructure seed: Overpass returned %d elements", len(elements))
-
-            village_rows: list[dict] = []
-            road_rows: list[dict] = []
-            for el in elements:
-                name = el.get("tags", {}).get("name")
-                if not name:
-                    continue
-                if el.get("type") == "node" and el.get("tags", {}).get("place") in ("city", "town"):
-                    pop_tag = el.get("tags", {}).get("population")
-                    population = int(pop_tag) if pop_tag and str(pop_tag).isdigit() else None
-                    village_rows.append({
-                        "name": name, "population": population,
-                        "wkt": f"POINT({el['lon']} {el['lat']})",
-                    })
-                elif el.get("type") == "way" and el.get("tags", {}).get("highway"):
-                    geom = el.get("geometry") or []
-                    if len(geom) < 2:
-                        continue
-                    coords = ",".join(f"{p['lon']} {p['lat']}" for p in geom)
-                    road_rows.append({"name": name, "wkt": f"LINESTRING({coords})"})
-
-            logger.info(
-                "NER-wide infrastructure seed: %d towns/cities, %d major roads to insert",
-                len(village_rows), len(road_rows),
-            )
-            if village_rows:
-                db.execute(text("""
-                    INSERT INTO infrastructure (kind, name, population, geom)
-                    VALUES ('village', :name, :population, ST_SetSRID(ST_GeomFromText(:wkt), 4326))
-                """), village_rows)
-            if road_rows:
-                db.execute(text("""
-                    INSERT INTO infrastructure (kind, name, status, geom)
-                    VALUES ('road', :name, 'open', ST_SetSRID(ST_GeomFromText(:wkt), 4326))
-                """), road_rows)
-            db.commit()
-            logger.info(
-                "NER-wide infrastructure seed: done — inserted %d towns/cities, %d major roads",
-                len(village_rows), len(road_rows),
-            )
-    except Exception as exc:
-        logger.error("NER-wide infrastructure seed failed (will retry next startup): %r", exc, exc_info=True)
-
-
 async def seed_district_baseline_cells() -> None:
     """One-time background task: ensures every NER district has at least one risk cell to
     anchor predictions to. Without this, a district-only /predict call (no exact
@@ -1717,13 +1637,11 @@ async def lifespan(_: FastAPI):
     seed_infrastructure()
     seed_evacuation_roads()
     hospital_seed_task = asyncio.create_task(seed_ner_hospitals())
-    infrastructure_seed_task = asyncio.create_task(seed_ner_infrastructure())
     district_seed_task = asyncio.create_task(seed_district_baseline_cells())
     if MONITOR_ENABLED:
         monitor_task = asyncio.create_task(monitor_loop())
     yield
     hospital_seed_task.cancel()
-    infrastructure_seed_task.cancel()
     district_seed_task.cancel()
     if monitor_task:
         monitor_task.cancel()
