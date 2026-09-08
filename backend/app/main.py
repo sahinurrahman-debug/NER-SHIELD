@@ -71,6 +71,12 @@ SEVERITY_ORDER = ["low", "moderate", "high", "critical"]
 # no raw sensor readings) needs to place/update a risk cell on the map.
 SEVERITY_MIDPOINT_SCORE = {"low": 15.0, "moderate": 40.0, "high": 65.0, "critical": 90.0}
 
+# The only risk cells run_monitor_tick() continuously re-scores with live/simulated weather —
+# the original East Khasi Hills "monitored seismic station" showcase. Every other cell (every
+# NER district's baseline, the extra demo cells, ad-hoc "live-*" prediction cells) holds
+# whatever a real /predict call last set, permanently, until predicted again.
+MONITORED_CELL_IDS = ["demo-001", "demo-002", "demo-003"]
+
 # Optional: real Sentinel-2 NDVI vegetation-change detection (see fetch_ndvi_change()).
 # Free trial at https://www.sentinel-hub.com/ — unset means the feature returns an honest
 # "not configured" response instead of faking satellite data.
@@ -1346,24 +1352,29 @@ def fetch_live_weather(latitude: float, longitude: float) -> dict | None:
 
 
 def run_monitor_tick() -> None:
-    """Periodically rescoring every *monitored* risk cell (seeded stations, cell_id not
-    starting with "live-") using live Open-Meteo data (by cell centroid) when
-    WEATHER_PROVIDER=open_meteo, falling back to a random walk otherwise — standing in
-    for a real IMD/sensor polling job until institutional IMD access exists.
+    """Periodically rescoring the small set of *monitored* seismic-station-style demo cells
+    (MONITORED_CELL_IDS — the original East Khasi Hills scenario) using live Open-Meteo data
+    (by cell centroid) when WEATHER_PROVIDER=open_meteo, falling back to a random walk
+    otherwise — standing in for a real IMD/sensor polling job until institutional IMD access
+    exists.
 
-    Ad-hoc "live-*" cells created by a one-off /predict call are deliberately excluded:
-    they represent a specific point-in-time prediction, not a continuously-monitored
-    station, so they stay at whatever value the prediction set rather than being
-    silently overwritten by real (often calmer) weather a couple of minutes later."""
+    Every other risk cell — ad-hoc "live-*" cells from a one-off /predict call, the other
+    demo cells, and every NER district's baseline cell — is deliberately excluded: it
+    represents a specific point-in-time prediction, not a continuously-monitored station, so
+    it stays at whatever value that prediction set. (This used to be a `cell_id NOT LIKE
+    'live-%'` filter, which correctly protected the 130 district-baseline cells — they use
+    that naming — but not demo-004/005/006, added by hand with "demo-" ids: those got quietly
+    overwritten by this same tick a couple of minutes after every prediction. Narrowing to an
+    explicit allowlist fixes that for good, for every current and future non-"live-*" cell.)"""
     with SessionLocal() as db:
         centroids = {
             row["cell_id"]: (row["lat"], row["lon"])
             for row in db.execute(text(
                 "SELECT cell_id, ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon "
-                "FROM risk_cells WHERE cell_id NOT LIKE 'live-%'"
-            )).mappings().all()
+                "FROM risk_cells WHERE cell_id = ANY(:ids)"
+            ), {"ids": MONITORED_CELL_IDS}).mappings().all()
         }
-        monitored_cells = db.query(RiskCell).filter(~RiskCell.cell_id.like("live-%")).all()
+        monitored_cells = db.query(RiskCell).filter(RiskCell.cell_id.in_(MONITORED_CELL_IDS)).all()
         for cell in monitored_cells:
             live = None
             if WEATHER_PROVIDER == "open_meteo":
