@@ -1933,15 +1933,6 @@ def alerts(db: Session = Depends(get_db)):
     return db.query(Alert).order_by(Alert.created_at.desc()).limit(100).all()
 
 
-@app.delete("/api/v1/alerts", dependencies=[Depends(require_api_key)])
-def clear_alerts(db: Session = Depends(get_db)):
-    """Deletes every alert — a demo/testing reset, not a normal operational action. Guarded by
-    the same optional API key as the other write endpoints."""
-    count = db.query(Alert).delete()
-    db.commit()
-    return {"deleted": count}
-
-
 @app.post("/api/v1/uploads", dependencies=[Depends(require_api_key)])
 async def upload_image(file: UploadFile = File(...)):
     allowed_types = {"image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm"}
