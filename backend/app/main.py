@@ -152,6 +152,59 @@ NER_DISTRICTS: dict[str, list[str]] = {
     ],
 }
 
+# Approximate district population from Census 2011 — India's last full census (the 2021 census
+# was postponed and has not been conducted). Real historical data, not fabricated, but two
+# honest caveats: it's 14+ years stale, and many of today's districts were only carved out of
+# a larger parent district after 2011, so those figures are this project's own estimated share
+# of that parent's 2011 total (population data doesn't exist yet for a district that didn't
+# exist in 2011) rather than an official count. Used by /api/v1/priorities as population_at_risk
+# — revalidate against the next census before using this for real operational decisions.
+NER_DISTRICT_POPULATION_2011: dict[str, int] = {
+    # Arunachal Pradesh
+    "Tawang": 49977, "West Kameng": 87013, "East Kameng": 78690, "Pakke-Kessang": 26000,
+    "Papum Pare": 176573, "Kra Daadi": 44000, "Kurung Kumey": 90838, "Kamle": 19000,
+    "Lower Subansiri": 82839, "Upper Subansiri": 83030, "West Siang": 112272, "Lepa Rada": 19000,
+    "East Siang": 99214, "Siang": 30000, "Upper Siang": 35320, "Lower Siang": 50000,
+    "Lower Dibang Valley": 53986, "Dibang Valley": 7948, "Anjaw": 21167, "Lohit": 145875,
+    "Namsai": 116000, "Changlang": 148226, "Tirap": 111975, "Longding": 60522,
+    "Shi Yomi": 9000, "Itanagar Capital Complex": 59490,
+    # Assam
+    "Baksa": 950075, "Barpeta": 1693622, "Biswanath": 611003, "Bongaigaon": 738804,
+    "Cachar": 1736617, "Charaideo": 471418, "Chirang": 482162, "Darrang": 928500,
+    "Dhemaji": 686133, "Dhubri": 1949258, "Dibrugarh": 1326335, "Dima Hasao": 213529,
+    "Goalpara": 1008183, "Golaghat": 1066888, "Hailakandi": 659260, "Hojai": 931218,
+    "Jorhat": 1092256, "Kamrup": 1517542, "Kamrup Metropolitan": 1260419, "Karbi Anglong": 965280,
+    "Karimganj": 1228686, "Kokrajhar": 887142, "Lakhimpur": 1042137, "Majuli": 167304,
+    "Morigaon": 957423, "Nagaon": 2823768, "Nalbari": 771639, "Sivasagar": 683930,
+    "South Salmara-Mankachar": 550811, "Sonitpur": 1924110, "Tinsukia": 1327929,
+    "Udalguri": 832769, "West Karbi Anglong": 336432, "Bajali": 370000, "Tamulpur": 350000,
+    # Manipur
+    "Bishnupur": 240363, "Chandel": 144182, "Churachandpur": 274143, "Imphal East": 452661,
+    "Imphal West": 514683, "Jiribam": 43000, "Kakching": 136000, "Kamjong": 45000,
+    "Kangpokpi": 150000, "Noney": 48000, "Pherzawl": 40000, "Senapati": 479148,
+    "Tamenglong": 140143, "Tengnoupal": 40000, "Thoubal": 422168, "Ukhrul": 183998,
+    # Meghalaya
+    "East Khasi Hills": 825922, "West Khasi Hills": 383461, "South West Khasi Hills": 115000,
+    "Eastern West Khasi Hills": 110000, "Ri Bhoi": 258840, "East Jaintia Hills": 122436,
+    "West Jaintia Hills": 270352, "East Garo Hills": 317072, "West Garo Hills": 642923,
+    "South Garo Hills": 142334, "North Garo Hills": 316061, "South West Garo Hills": 223976,
+    # Mizoram
+    "Aizawl": 404054, "Lunglei": 161428, "Champhai": 125745, "Mamit": 86364,
+    "Kolasib": 83955, "Serchhip": 64937, "Lawngtlai": 117894, "Saiha": 56574,
+    "Khawzawl": 40000, "Hnahthial": 30000, "Saitual": 35000,
+    # Nagaland
+    "Kohima": 270063, "Dimapur": 379769, "Mokokchung": 194622, "Tuensang": 196596,
+    "Wokha": 166239, "Zunheboto": 140757, "Phek": 163294, "Mon": 250671,
+    "Longleng": 50484, "Kiphire": 74004, "Peren": 95219, "Noklak": 86000,
+    "Chumoukedima": 150000, "Niuland": 40000, "Shamator": 45000, "Tseminyu": 50000,
+    # Sikkim
+    "East Sikkim": 283583, "West Sikkim": 136299, "North Sikkim": 43354, "South Sikkim": 146850,
+    "Pakyong": 45000, "Soreng": 45000,
+    # Tripura
+    "West Tripura": 1724619, "Sepahijala": 467000, "Gomati": 436046, "South Tripura": 450000,
+    "Dhalai": 378230, "Khowai": 327466, "Unakoti": 278833, "North Tripura": 417441,
+}
+
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 loaded_model = None
@@ -1728,22 +1781,40 @@ def forecast(district: str, db: Session = Depends(get_db)):
 
 @app.get("/api/v1/priorities")
 def priorities(db: Session = Depends(get_db)):
+    # Hospitals are excluded here deliberately: with ~3000 real hospitals now cached NER-wide
+    # (see seed_ner_hospitals()), counting them as "nearby infrastructure" would inflate this
+    # toward hospital density rather than exposure — a hospital nearby is response capacity,
+    # not something at risk. Roads/villages/schools still count as before.
     rows = db.execute(text("""
         SELECT rc.cell_id, rc.district, rc.severity, rc.risk_score,
-               COUNT(i.id) AS nearby_infrastructure,
-               COALESCE(SUM(i.population), 0)::int AS population_at_risk,
-               ROUND((
-                   rc.risk_score * (1 + 0.2 * COUNT(i.id) + 0.05 * COALESCE(SUM(i.population), 0) / 1000.0)
-               )::numeric, 2) AS priority_score
+               COUNT(i.id) AS nearby_infrastructure
         FROM risk_cells rc
-        LEFT JOIN infrastructure i ON ST_DWithin(rc.geom, i.geom, 0.02)
+        LEFT JOIN infrastructure i ON ST_DWithin(rc.geom, i.geom, 0.02) AND i.kind != 'hospital'
         GROUP BY rc.cell_id, rc.district, rc.severity, rc.risk_score
-        ORDER BY priority_score DESC
-        LIMIT 50
     """)).mappings().all()
+
+    priorities = []
+    for row in rows:
+        population = NER_DISTRICT_POPULATION_2011.get(row["district"], 0)
+        priority_score = round(
+            row["risk_score"] * (1 + 0.2 * row["nearby_infrastructure"] + 0.05 * population / 1000.0), 2
+        )
+        priorities.append({
+            "cell_id": row["cell_id"], "district": row["district"], "severity": row["severity"],
+            "risk_score": row["risk_score"], "nearby_infrastructure": row["nearby_infrastructure"],
+            "population_at_risk": population, "priority_score": priority_score,
+        })
+    priorities.sort(key=lambda p: p["priority_score"], reverse=True)
+
     return {
-        "note": "population_at_risk sums approximate named-settlement figures within ~2km, not live census or gridded population data.",
-        "priorities": [dict(row) for row in rows],
+        "note": (
+            "population_at_risk is each district's approximate Census 2011 population — "
+            "India's last full census, so this is real historical data but 14+ years stale, "
+            "and districts created after 2011 use an estimated share of their former parent "
+            "district's figure. nearby_infrastructure counts real seeded villages/roads/"
+            "schools within ~2km of this specific risk cell (not hospitals)."
+        ),
+        "priorities": priorities[:200],
     }
 
 
