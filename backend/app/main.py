@@ -1558,6 +1558,85 @@ async def seed_ner_hospitals() -> None:
         logger.error("NER-wide hospital seed failed (will retry next startup): %r", exc, exc_info=True)
 
 
+async def seed_ner_infrastructure() -> None:
+    """One-time bulk fetch of real schools, key public buildings, and major roads across all
+    NER states from OpenStreetMap — cached into `infrastructure` so priorities' nearby_infra-
+    structure counts real assets everywhere, not just the hand-seeded East Khasi Hills demo
+    data. A first version of this requested full road LINESTRING geometry (`out center geom;`)
+    for every major road in the region; across NER's dense mountain highway network that held
+    enough parsed coordinate data in memory at once to exceed Render's 512MB limit and crash
+    the backend into a restart loop. This version — like seed_ner_hospitals() above, which
+    never had the problem — requests only a center POINT per element (`out center N;`), never
+    full way geometry, plus a hard numeric result cap independent of how much real data
+    exists, and commits in small chunks instead of one giant batch so no single step holds
+    more than a few hundred rows in memory."""
+    try:
+        logger.info("NER-wide infrastructure seed: starting")
+        with SessionLocal() as db:
+            existing = db.execute(text(
+                "SELECT COUNT(*) FROM infrastructure WHERE kind IN ('school','building','road') "
+                "AND (district IS NULL OR district != 'East Khasi Hills')"
+            )).scalar()
+            logger.info("NER-wide infrastructure seed: %s existing row(s)", existing)
+            if existing and existing > 10:
+                logger.info("NER-wide infrastructure seed: already populated, skipping")
+                return
+            # Rough bounding box covering all eight North Eastern Region states.
+            south, west, north, east = 22.0, 88.0, 29.5, 97.5
+            query = (
+                f'[out:json][timeout:120];'
+                f'(node["amenity"="school"]({south},{west},{north},{east});'
+                f'way["amenity"="school"]({south},{west},{north},{east});'
+                f'node["amenity"~"^(college|townhall|community_centre|marketplace)$"]({south},{west},{north},{east});'
+                f'way["amenity"~"^(college|townhall|community_centre|marketplace)$"]({south},{west},{north},{east});'
+                f'way["highway"~"^(motorway|trunk|primary)$"]({south},{west},{north},{east}););'
+                f'out center 8000;'
+            )
+            body = await asyncio.to_thread(_overpass_post, query, 150)
+            if body is None:
+                logger.error("NER-wide infrastructure seed: every Overpass mirror failed, will retry next startup")
+                return
+            elements = body.get("elements", [])
+            logger.info("NER-wide infrastructure seed: Overpass returned %d elements", len(elements))
+
+            rows = []
+            for el in elements:
+                tags = el.get("tags", {})
+                name = tags.get("name")
+                if not name:
+                    continue
+                lat = el.get("lat") or el.get("center", {}).get("lat")
+                lon = el.get("lon") or el.get("center", {}).get("lon")
+                if lat is None or lon is None:
+                    continue
+                if tags.get("amenity") == "school":
+                    kind = "school"
+                elif tags.get("highway"):
+                    kind = "road"
+                else:
+                    kind = "building"
+                rows.append({"kind": kind, "name": name, "lon": lon, "lat": lat})
+            logger.info("NER-wide infrastructure seed: inserting %d rows in chunks", len(rows))
+
+            insert_stmt = text("""
+                INSERT INTO infrastructure (kind, name, geom)
+                VALUES (:kind, :name, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
+            """)
+            CHUNK = 500
+            inserted = 0
+            for i in range(0, len(rows), CHUNK):
+                chunk = rows[i:i + CHUNK]
+                db.execute(insert_stmt, chunk)
+                db.commit()
+                inserted += len(chunk)
+            logger.info(
+                "NER-wide infrastructure seed: inserted %d real schools/buildings/roads from OpenStreetMap",
+                inserted,
+            )
+    except Exception as exc:
+        logger.error("NER-wide infrastructure seed failed (will retry next startup): %r", exc, exc_info=True)
+
+
 async def seed_district_baseline_cells() -> None:
     """One-time background task: ensures every NER district has at least one risk cell to
     anchor predictions to. Without this, a district-only /predict call (no exact
@@ -1637,11 +1716,13 @@ async def lifespan(_: FastAPI):
     seed_infrastructure()
     seed_evacuation_roads()
     hospital_seed_task = asyncio.create_task(seed_ner_hospitals())
+    infrastructure_seed_task = asyncio.create_task(seed_ner_infrastructure())
     district_seed_task = asyncio.create_task(seed_district_baseline_cells())
     if MONITOR_ENABLED:
         monitor_task = asyncio.create_task(monitor_loop())
     yield
     hospital_seed_task.cancel()
+    infrastructure_seed_task.cancel()
     district_seed_task.cancel()
     if monitor_task:
         monitor_task.cancel()
