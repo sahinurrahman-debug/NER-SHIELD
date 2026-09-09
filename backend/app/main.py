@@ -7,7 +7,7 @@ import socket
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from math import atan2, cos, radians, sin, sqrt
+from math import atan, atan2, cos, degrees, hypot, radians, sin, sqrt
 from pathlib import Path
 from typing import Literal
 
@@ -83,6 +83,15 @@ MONITORED_CELL_IDS = ["demo-001", "demo-002", "demo-003"]
 SENTINELHUB_CLIENT_ID = os.getenv("SENTINELHUB_CLIENT_ID")
 SENTINELHUB_CLIENT_SECRET = os.getenv("SENTINELHUB_CLIENT_SECRET")
 NDVI_CACHE_DAYS = int(os.getenv("NDVI_CACHE_DAYS", "7"))
+
+# Real terrain (see _fetch_terrain()): free public SRTM 30m DEM elevation lookups, no key
+# needed. https://www.opentopodata.org/
+OPENTOPODATA_URL = "https://api.opentopodata.org/v1/srtm30m"
+
+# Real historical landslide records (see seed_historical_landslides()): NASA's Cooperative
+# Open Online Landslide Repository, a public ArcGIS Feature Service, no key needed.
+# https://landslides.nasa.gov/
+COOLR_FEATURE_URL = "https://gis.earthdata.nasa.gov/portal/rest/services/Landslides/COOLR_Events_Points/FeatureServer/0/query"
 
 # Real-time monitoring loop (see run_monitor_tick). Pulls live rainfall/soil-moisture from
 # Open-Meteo (free, keyless) per risk cell; falls back to a random walk if that call fails
@@ -266,6 +275,11 @@ class RiskCell(Base):
     district: Mapped[str] = mapped_column(String(100), index=True)
     geom: Mapped[object] = mapped_column(Geometry("POLYGON", srid=4326, spatial_index=True))
     slope_deg: Mapped[float] = mapped_column(Float)
+    # Real SRTM-derived values (see _fetch_terrain() / seed_ner_terrain()); NULL until that
+    # background seed reaches this cell — slope_deg above starts as a placeholder and gets
+    # overwritten with the real value at the same time these are filled in.
+    elevation_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    aspect_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
     rain_24h_mm: Mapped[float] = mapped_column(Float, default=0)
     soil_moisture_pct: Mapped[float] = mapped_column(Float, default=0)
     historical_density: Mapped[float] = mapped_column(Float, default=0)
@@ -332,6 +346,23 @@ class PredictionLog(Base):
     rain_24h_mm: Mapped[float] = mapped_column(Float, default=0)
     source: Mapped[str] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class HistoricalLandslide(Base):
+    """One real historical landslide event record from NASA's COOLR catalog — see
+    seed_historical_landslides(). Replaces the fully manual/synthetic Historical_Landslide_
+    Count input with real ground-truth event locations and dates."""
+    __tablename__ = "historical_landslides"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    event_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    landslide_trigger: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    source_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    citation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    district: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    geom: Mapped[object] = mapped_column(Geometry(geometry_type="POINT", srid=4326, spatial_index=True))
 
 
 class NdviReading(Base):
@@ -933,6 +964,43 @@ def _geocode_district(district: str) -> tuple[float, float] | None:
     except (httpx.HTTPError, KeyError, ValueError, IndexError) as exc:
         logger.error("Photon geocode for %s failed: %r", district, exc)
     return None
+
+
+def _fetch_terrain(lat: float, lon: float) -> dict | None:
+    """Real elevation + slope + aspect for one point, derived from NASA/USGS SRTM 30m DEM
+    data via the free public Open Topo Data API — never fabricated. The API only serves raw
+    elevation, not slope/aspect directly, so those are computed here with the standard GIS
+    finite-difference method: sample elevation at the point plus its N/S/E/W neighbours
+    ~100m away (comfortably wider than SRTM's own ~30m pixel size, so the estimate isn't
+    dominated by single-pixel noise), then take the terrain gradient across those samples.
+    Returns None on any failure; never raises."""
+    d = 0.0009  # ~100m of latitude/longitude at this scale
+    points = [(lat, lon), (lat + d, lon), (lat - d, lon), (lat, lon + d), (lat, lon - d)]
+    locations = "|".join(f"{plat},{plon}" for plat, plon in points)
+    try:
+        response = httpx.get(
+            OPENTOPODATA_URL, params={"locations": locations},
+            headers={"User-Agent": "NER-SHIELD/1.0 (landslide early-warning system; SIH 2026)"}, timeout=20,
+        )
+        response.raise_for_status()
+        results = response.json().get("results", [])
+        if len(results) != 5 or any(r.get("elevation") is None for r in results):
+            return None
+        center, north, south, east, west = (r["elevation"] for r in results)
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        logger.error("Terrain fetch for (%s, %s) failed: %r", lat, lon, exc)
+        return None
+
+    # Real-world metres per degree at this latitude (longitude degrees shrink toward the
+    # poles) — not a flat degrees-as-metres assumption.
+    meters_per_deg_lat = 111_320.0
+    meters_per_deg_lon = 111_320.0 * cos(radians(lat))
+    dz_dy = (north - south) / (2 * d * meters_per_deg_lat)
+    dz_dx = (east - west) / (2 * d * meters_per_deg_lon)
+
+    slope_deg = degrees(atan(hypot(dz_dx, dz_dy)))
+    aspect_deg = (90 - degrees(atan2(dz_dy, -dz_dx))) % 360
+    return {"elevation_m": round(center, 1), "slope_deg": round(slope_deg, 2), "aspect_deg": round(aspect_deg, 1)}
 
 
 def _nearest_hospital_overpass(lat: float, lon: float, radius_km: float = 15.0) -> dict | None:
@@ -1676,6 +1744,146 @@ async def seed_district_baseline_cells() -> None:
         logger.error("District baseline seed failed (will retry next startup): %r", exc, exc_info=True)
 
 
+async def seed_ner_terrain() -> None:
+    """One-time-per-cell background task: replaces every risk cell's placeholder slope_deg
+    (25.0 for district baselines, hand-typed for the original demo cells) with real
+    elevation/slope/aspect derived from SRTM DEM data (see _fetch_terrain()). Runs after
+    seed_district_baseline_cells() (see the lifespan() wiring below) so it also covers
+    districts that only just got a cell. Gated on elevation_m IS NULL rather than a single
+    startup flag, so it naturally catches any cell — old demo data, a newly geocoded
+    district, anything — that doesn't have real terrain yet, on this or a later restart.
+    Paced at roughly 1 request/second, respecting Open Topo Data's public fair-use policy;
+    wrapped like every other seed task here so nothing dies silently as an unawaited task."""
+    try:
+        logger.info("NER terrain seed: starting")
+        with SessionLocal() as db:
+            cells = db.execute(text(
+                "SELECT cell_id, ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon "
+                "FROM risk_cells WHERE elevation_m IS NULL"
+            )).mappings().all()
+        if not cells:
+            logger.info("NER terrain seed: every risk cell already has real terrain, skipping")
+            return
+        logger.info("NER terrain seed: %d cell(s) need real SRTM-derived terrain", len(cells))
+        updated = 0
+        for cell in cells:
+            terrain = await asyncio.to_thread(_fetch_terrain, cell["lat"], cell["lon"])
+            if terrain:
+                with SessionLocal() as db:
+                    db.execute(text(
+                        "UPDATE risk_cells SET slope_deg = :slope, elevation_m = :elev, "
+                        "aspect_deg = :aspect WHERE cell_id = :cell_id"
+                    ), {
+                        "slope": terrain["slope_deg"], "elev": terrain["elevation_m"],
+                        "aspect": terrain["aspect_deg"], "cell_id": cell["cell_id"],
+                    })
+                    db.commit()
+                updated += 1
+            await asyncio.sleep(1.0)  # respect Open Topo Data's public fair-use rate limit
+        logger.info("NER terrain seed: done, updated %d/%d cell(s) with real terrain", updated, len(cells))
+    except Exception as exc:
+        logger.error("NER terrain seed failed (will retry next startup): %r", exc, exc_info=True)
+
+
+async def seed_district_baselines_then_terrain() -> None:
+    """Glue coroutine: terrain seeding reads risk_cells' geometry to know where to sample,
+    so it must run after district baseline seeding has created those cells, not concurrently
+    with it — a plain asyncio.create_task() for each would race. Keeping the two functions
+    themselves independent (and independently testable) and only sequencing them here."""
+    await seed_district_baseline_cells()
+    await seed_ner_terrain()
+
+
+async def seed_historical_landslides() -> None:
+    """One-time bulk fetch of real historical landslide event records across NER from NASA's
+    COOLR (Cooperative Open Online Landslide Repository) — a public ArcGIS Feature Service,
+    no key needed. Replaces the fully manual/synthetic Historical_Landslide_Count input with
+    real ground-truth event locations and dates. Mirrors seed_ner_hospitals()'s memory-safe
+    shape: a hard result cap and one bounding-box query; wrapped so nothing here dies
+    silently as an unawaited task."""
+    try:
+        logger.info("Historical landslide seed: starting")
+        with SessionLocal() as db:
+            existing = db.execute(text("SELECT COUNT(*) FROM historical_landslides")).scalar()
+            logger.info("Historical landslide seed: %s existing row(s)", existing)
+            if existing and existing > 1:
+                logger.info("Historical landslide seed: already populated, skipping")
+                return
+            south, west, north, east = 22.0, 88.0, 29.5, 97.5
+            params = {
+                "where": "1=1",
+                "outFields": "event_id,event_title,event_date,landslide_category,landslide_trigger,source_name,citation,latitude,longitude",
+                "geometry": f"{west},{south},{east},{north}",
+                "geometryType": "esriGeometryEnvelope", "inSR": 4326,
+                "spatialRel": "esriSpatialRelIntersects", "f": "json", "resultRecordCount": 2000,
+            }
+            try:
+                response = await asyncio.to_thread(
+                    httpx.get, COOLR_FEATURE_URL, params=params,
+                    headers={"User-Agent": "NER-SHIELD/1.0 (landslide early-warning system; SIH 2026)"}, timeout=60,
+                )
+                response.raise_for_status()
+                body = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.error("Historical landslide seed: COOLR request failed, will retry next startup: %r", exc)
+                return
+            features = body.get("features", [])
+            logger.info("Historical landslide seed: COOLR returned %d event(s) for NER", len(features))
+            if not features:
+                return
+
+            # Assign each event to its nearest NER district using the district baseline
+            # cells' own geocoded centroids, instead of a second geocoding pass.
+            district_points = db.execute(text(
+                "SELECT district, ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon FROM risk_cells"
+            )).mappings().all()
+
+            def nearest_district(lat: float, lon: float) -> str | None:
+                best, best_dist = None, float("inf")
+                for row in district_points:
+                    dist = (row["lat"] - lat) ** 2 + (row["lon"] - lon) ** 2
+                    if dist < best_dist:
+                        best, best_dist = row["district"], dist
+                return best
+
+            rows = []
+            for feat in features:
+                attrs = feat.get("attributes", {})
+                lat, lon = attrs.get("latitude"), attrs.get("longitude")
+                if lat is None or lon is None:
+                    continue
+                event_date_ms = attrs.get("event_date")
+                rows.append({
+                    "event_id": attrs.get("event_id"),
+                    "title": (attrs.get("event_title") or "Unnamed landslide event")[:200],
+                    "event_date": datetime.fromtimestamp(event_date_ms / 1000, tz=timezone.utc) if event_date_ms else None,
+                    "category": (attrs.get("landslide_category") or None),
+                    "landslide_trigger": (attrs.get("landslide_trigger") or None),
+                    "source_name": (attrs.get("source_name") or None),
+                    "citation": (attrs.get("citation") or "")[:1000] or None,
+                    "district": nearest_district(lat, lon),
+                    "lat": lat, "lon": lon,
+                })
+            logger.info("Historical landslide seed: inserting %d event(s) in chunks", len(rows))
+
+            insert_stmt = text("""
+                INSERT INTO historical_landslides
+                    (event_id, title, event_date, category, landslide_trigger, source_name, citation, district, geom)
+                VALUES (:event_id, :title, :event_date, :category, :landslide_trigger, :source_name, :citation,
+                        :district, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
+            """)
+            CHUNK = 500
+            inserted = 0
+            for i in range(0, len(rows), CHUNK):
+                chunk = rows[i:i + CHUNK]
+                db.execute(insert_stmt, chunk)
+                db.commit()
+                inserted += len(chunk)
+            logger.info("Historical landslide seed: inserted %d real landslide event(s) from NASA COOLR", inserted)
+    except Exception as exc:
+        logger.error("Historical landslide seed failed (will retry next startup): %r", exc, exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global loaded_model, monitor_task, shap_explainer, shap_imputer, main_event_loop
@@ -1685,6 +1893,8 @@ async def lifespan(_: FastAPI):
     # covers adding `population` to a database that already had `infrastructure` rows
     # from before this column existed. Safe to run every startup (idempotent).
     with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE risk_cells ADD COLUMN IF NOT EXISTS elevation_m FLOAT"))
+        conn.execute(text("ALTER TABLE risk_cells ADD COLUMN IF NOT EXISTS aspect_deg FLOAT"))
         conn.execute(text("ALTER TABLE infrastructure ADD COLUMN IF NOT EXISTS population INTEGER"))
         conn.execute(text("UPDATE infrastructure SET population = 45000 WHERE name = 'Mawlai' AND population IS NULL"))
         conn.execute(text("UPDATE infrastructure SET population = 20000 WHERE name = 'Nongthymmai' AND population IS NULL"))
@@ -1717,13 +1927,15 @@ async def lifespan(_: FastAPI):
     seed_evacuation_roads()
     hospital_seed_task = asyncio.create_task(seed_ner_hospitals())
     infrastructure_seed_task = asyncio.create_task(seed_ner_infrastructure())
-    district_seed_task = asyncio.create_task(seed_district_baseline_cells())
+    district_seed_task = asyncio.create_task(seed_district_baselines_then_terrain())
+    landslide_seed_task = asyncio.create_task(seed_historical_landslides())
     if MONITOR_ENABLED:
         monitor_task = asyncio.create_task(monitor_loop())
     yield
     hospital_seed_task.cancel()
     infrastructure_seed_task.cancel()
     district_seed_task.cancel()
+    landslide_seed_task.cancel()
     if monitor_task:
         monitor_task.cancel()
 
@@ -1820,6 +2032,35 @@ def infrastructure(db: Session = Depends(get_db)):
             }
             for row in rows
         ],
+    }
+
+
+@app.get("/api/v1/historical-landslides")
+def historical_landslides_endpoint(db: Session = Depends(get_db)):
+    """Real historical landslide event records for NER from NASA's Cooperative Open Online
+    Landslide Repository (COOLR) — see seed_historical_landslides(). Each event's citation
+    field names its original source; not a NER-SHIELD assessment."""
+    rows = db.execute(text("""
+        SELECT id, event_id, title, event_date, category, landslide_trigger, source_name,
+               citation, district, ST_AsGeoJSON(geom) AS geometry
+        FROM historical_landslides
+    """)).mappings().all()
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": json.loads(row["geometry"]),
+                "properties": {
+                    "id": row["id"], "event_id": row["event_id"], "title": row["title"],
+                    "event_date": row["event_date"].isoformat() if row["event_date"] else None,
+                    "category": row["category"], "trigger": row["landslide_trigger"],
+                    "source_name": row["source_name"], "citation": row["citation"], "district": row["district"],
+                },
+            }
+            for row in rows
+        ],
+        "note": "Real historical landslide event records for NER from NASA's COOLR catalog.",
     }
 
 
@@ -2088,8 +2329,68 @@ def create_report(payload: ReportCreate, db: Session = Depends(get_db)):
     return report
 
 
+def _resolve_prediction_location(db: Session, p: RiskFeatures) -> tuple[float, float] | None:
+    """The real-world point a /predict call is about, for looking up real terrain/history —
+    the exact coordinates if given, else the requested district's existing risk-cell centroid.
+    Returns None for the explainability-sandbox case (no district or coordinates at all),
+    which deliberately stays on flat neutral defaults / the model's own imputation."""
+    if p.latitude is not None and p.longitude is not None:
+        return p.latitude, p.longitude
+    if p.district:
+        row = db.execute(text(
+            "SELECT ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon "
+            "FROM risk_cells WHERE district = :d ORDER BY updated_at DESC LIMIT 1"
+        ), {"d": p.district}).mappings().first()
+        if row:
+            return row["lat"], row["lon"]
+    return None
+
+
+def _apply_real_defaults(db: Session, p: RiskFeatures) -> None:
+    """Fills Slope_Angle/Elevation_m/Aspect from real SRTM-derived terrain (seed_ner_terrain())
+    and Historical_Landslide_Count from real NASA COOLR event records (seed_historical_
+    landslides()) for whichever of those fields the caller left unset — so a /predict call
+    for a known district/location reasons over real terrain and landslide history instead of
+    the flat NEUTRAL_DEFAULTS constants. Only ever fills in a field the caller left as None;
+    never overrides an explicitly supplied reading, and never raises."""
+    if (
+        p.Slope_Angle is not None and p.Elevation_m is not None
+        and p.Aspect is not None and p.Historical_Landslide_Count is not None
+    ):
+        return
+    location = _resolve_prediction_location(db, p)
+    if location is None:
+        return
+    lat, lon = location
+
+    if p.Slope_Angle is None or p.Elevation_m is None or p.Aspect is None:
+        # Only trust a cell's terrain if it's close enough that "local terrain" is still a
+        # reasonable description of this point — not just the nearest cell anywhere.
+        cell = db.execute(text("""
+            SELECT slope_deg, elevation_m, aspect_deg FROM risk_cells
+            WHERE ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography, 15000)
+            ORDER BY ST_Distance(geom, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)) LIMIT 1
+        """), {"lat": lat, "lon": lon}).mappings().first()
+        if cell:
+            if p.Slope_Angle is None and cell["slope_deg"] is not None:
+                p.Slope_Angle = cell["slope_deg"]
+            if p.Elevation_m is None and cell["elevation_m"] is not None:
+                p.Elevation_m = cell["elevation_m"]
+            if p.Aspect is None and cell["aspect_deg"] is not None:
+                p.Aspect = cell["aspect_deg"]
+
+    if p.Historical_Landslide_Count is None:
+        count = db.execute(text("""
+            SELECT COUNT(*) FROM historical_landslides
+            WHERE ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography, 50000)
+        """), {"lat": lat, "lon": lon}).scalar()
+        if count:
+            p.Historical_Landslide_Count = float(min(count, 20))
+
+
 @app.post("/api/v1/predict", dependencies=[Depends(require_api_key)])
 def prediction(payload: RiskFeatures, db: Session = Depends(get_db)):
+    _apply_real_defaults(db, payload)
     probability, source = predict(payload)
     score = round(probability * 100, 2)
     severity = severity_for(score)
