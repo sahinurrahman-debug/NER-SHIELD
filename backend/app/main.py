@@ -167,6 +167,23 @@ NER_DISTRICTS: dict[str, list[str]] = {
     ],
 }
 
+# Approximate per-state bounding boxes (south, west, north, east) — deliberately overlapping
+# at shared borders (dedup by event_id handles any double-fetch). Used by
+# seed_historical_landslides() to query NASA COOLR per state instead of one NER-wide query:
+# a single query returns whichever ~2000 records the server enumerates first, which turned
+# out to cluster entirely in one Mizoram/Bangladesh-border batch, leaving the other 7 states
+# with zero real events even though NASA's catalog has real records for them too.
+NER_STATE_BBOXES: dict[str, tuple[float, float, float, float]] = {
+    "Arunachal Pradesh": (26.6, 91.5, 29.5, 97.5),
+    "Assam": (24.0, 89.6, 28.3, 96.1),
+    "Manipur": (23.7, 92.9, 25.8, 94.9),
+    "Meghalaya": (24.9, 89.7, 26.2, 92.9),
+    "Mizoram": (21.9, 92.1, 24.6, 93.6),
+    "Nagaland": (25.1, 93.2, 27.1, 95.9),
+    "Sikkim": (26.9, 87.9, 28.3, 89.0),
+    "Tripura": (22.8, 91.0, 24.6, 92.4),
+}
+
 # Approximate district population from Census 2011 — India's last full census (the 2021 census
 # was postponed and has not been conducted). Real historical data, not fabricated, but two
 # honest caveats: it's 14+ years stale, and many of today's districts were only carved out of
@@ -1794,13 +1811,42 @@ async def seed_district_baselines_then_terrain() -> None:
     await seed_ner_terrain()
 
 
+def _fetch_coolr_events(south: float, west: float, north: float, east: float) -> list[dict]:
+    """One bounding-box query against NASA's COOLR Feature Service. Returns [] on any
+    failure — never raises, so one bad state doesn't abort the other seven."""
+    params = {
+        "where": "1=1",
+        "outFields": "event_id,event_title,event_date,landslide_category,landslide_trigger,source_name,citation,latitude,longitude",
+        "geometry": f"{west},{south},{east},{north}",
+        "geometryType": "esriGeometryEnvelope", "inSR": 4326,
+        "spatialRel": "esriSpatialRelIntersects", "f": "json", "resultRecordCount": 2000,
+    }
+    try:
+        response = httpx.get(
+            COOLR_FEATURE_URL, params=params,
+            headers={"User-Agent": "NER-SHIELD/1.0 (landslide early-warning system; SIH 2026)"}, timeout=60,
+        )
+        response.raise_for_status()
+        return response.json().get("features", [])
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.error("Historical landslide seed: COOLR query for bbox (%s,%s,%s,%s) failed: %r", south, west, north, east, exc)
+        return []
+
+
 async def seed_historical_landslides() -> None:
     """One-time bulk fetch of real historical landslide event records across NER from NASA's
     COOLR (Cooperative Open Online Landslide Repository) — a public ArcGIS Feature Service,
     no key needed. Replaces the fully manual/synthetic Historical_Landslide_Count input with
-    real ground-truth event locations and dates. Mirrors seed_ner_hospitals()'s memory-safe
-    shape: a hard result cap and one bounding-box query; wrapped so nothing here dies
-    silently as an unawaited task."""
+    real ground-truth event locations and dates.
+
+    Queries per NER_STATE_BBOXES entry rather than one NER-wide query: a single query only
+    returns the first ~2000 records the server happens to enumerate, which in practice all
+    came from one dense Mizoram/Bangladesh-border batch — leaving every other state with zero
+    real events even though NASA's catalog has real records there too. Querying per state (with
+    overlapping boxes at shared borders, deduped by event_id) gives every state a fair shot at
+    its own 2000-record slice instead of one state's density crowding out the rest. Mirrors
+    seed_ner_hospitals()'s memory-safe shape otherwise; wrapped so nothing here dies silently
+    as an unawaited task."""
     try:
         logger.info("Historical landslide seed: starting")
         with SessionLocal() as db:
@@ -1809,34 +1855,33 @@ async def seed_historical_landslides() -> None:
             if existing and existing > 1:
                 logger.info("Historical landslide seed: already populated, skipping")
                 return
-            south, west, north, east = 22.0, 88.0, 29.5, 97.5
-            params = {
-                "where": "1=1",
-                "outFields": "event_id,event_title,event_date,landslide_category,landslide_trigger,source_name,citation,latitude,longitude",
-                "geometry": f"{west},{south},{east},{north}",
-                "geometryType": "esriGeometryEnvelope", "inSR": 4326,
-                "spatialRel": "esriSpatialRelIntersects", "f": "json", "resultRecordCount": 2000,
-            }
-            try:
-                response = await asyncio.to_thread(
-                    httpx.get, COOLR_FEATURE_URL, params=params,
-                    headers={"User-Agent": "NER-SHIELD/1.0 (landslide early-warning system; SIH 2026)"}, timeout=60,
-                )
-                response.raise_for_status()
-                body = response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                logger.error("Historical landslide seed: COOLR request failed, will retry next startup: %r", exc)
-                return
-            features = body.get("features", [])
-            logger.info("Historical landslide seed: COOLR returned %d event(s) for NER", len(features))
+
+            seen_event_ids: set[int] = set()
+            features: list[dict] = []
+            for state, (south, west, north, east) in NER_STATE_BBOXES.items():
+                state_features = await asyncio.to_thread(_fetch_coolr_events, south, west, north, east)
+                new_count = 0
+                for feat in state_features:
+                    event_id = feat.get("attributes", {}).get("event_id")
+                    if event_id is not None and event_id not in seen_event_ids:
+                        seen_event_ids.add(event_id)
+                        features.append(feat)
+                        new_count += 1
+                logger.info("Historical landslide seed: %s contributed %d new event(s) (%d returned)", state, new_count, len(state_features))
+                await asyncio.sleep(1.0)  # be a polite, paced caller, same as every other seed here
+            logger.info("Historical landslide seed: COOLR returned %d unique event(s) for NER overall", len(features))
             if not features:
                 return
 
             # Assign each event to its nearest NER district using the district baseline
-            # cells' own geocoded centroids, instead of a second geocoding pass.
+            # cells' own geocoded centroids, instead of a second geocoding pass — but only
+            # within a plausible distance, so a real event just across the border in
+            # Bangladesh/Myanmar/Bhutan isn't mislabeled as being in whichever NER district
+            # happens to be nearest, however far that actually is.
             district_points = db.execute(text(
                 "SELECT district, ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon FROM risk_cells"
             )).mappings().all()
+            max_district_dist_deg = 0.7  # roughly 70km at NER's latitude
 
             def nearest_district(lat: float, lon: float) -> str | None:
                 best, best_dist = None, float("inf")
@@ -1844,7 +1889,7 @@ async def seed_historical_landslides() -> None:
                     dist = (row["lat"] - lat) ** 2 + (row["lon"] - lon) ** 2
                     if dist < best_dist:
                         best, best_dist = row["district"], dist
-                return best
+                return best if best_dist <= max_district_dist_deg ** 2 else None
 
             rows = []
             for feat in features:
@@ -2347,15 +2392,18 @@ def _resolve_prediction_location(db: Session, p: RiskFeatures) -> tuple[float, f
 
 
 def _apply_real_defaults(db: Session, p: RiskFeatures) -> None:
-    """Fills Slope_Angle/Elevation_m/Aspect from real SRTM-derived terrain (seed_ner_terrain())
-    and Historical_Landslide_Count from real NASA COOLR event records (seed_historical_
-    landslides()) for whichever of those fields the caller left unset — so a /predict call
-    for a known district/location reasons over real terrain and landslide history instead of
-    the flat NEUTRAL_DEFAULTS constants. Only ever fills in a field the caller left as None;
-    never overrides an explicitly supplied reading, and never raises."""
+    """Fills, for whichever fields the caller left unset, real data instead of the flat
+    NEUTRAL_DEFAULTS constants: Rainfall_mm/Rainfall_3Day/Rainfall_7Day/Soil_Moisture_Content
+    from live Open-Meteo weather (fetch_live_weather() — the same real source the monitor
+    loop uses for its 3 showcase cells, here reachable for ANY NER district/location, not
+    just those 3), Slope_Angle/Elevation_m/Aspect from real SRTM-derived terrain
+    (seed_ner_terrain()), and Historical_Landslide_Count from real NASA COOLR event records
+    (seed_historical_landslides()). Only ever fills in a field the caller left as None; never
+    overrides an explicitly supplied reading, and never raises."""
     if (
-        p.Slope_Angle is not None and p.Elevation_m is not None
-        and p.Aspect is not None and p.Historical_Landslide_Count is not None
+        p.Slope_Angle is not None and p.Elevation_m is not None and p.Aspect is not None
+        and p.Historical_Landslide_Count is not None and p.Rainfall_mm is not None
+        and p.Rainfall_3Day is not None and p.Rainfall_7Day is not None and p.Soil_Moisture_Content is not None
     ):
         return
     location = _resolve_prediction_location(db, p)
@@ -2386,6 +2434,18 @@ def _apply_real_defaults(db: Session, p: RiskFeatures) -> None:
         """), {"lat": lat, "lon": lon}).scalar()
         if count:
             p.Historical_Landslide_Count = float(min(count, 20))
+
+    if p.Rainfall_mm is None or p.Rainfall_3Day is None or p.Rainfall_7Day is None or p.Soil_Moisture_Content is None:
+        weather = fetch_live_weather(lat, lon)
+        if weather:
+            if p.Rainfall_mm is None:
+                p.Rainfall_mm = min(weather["rain_24h_mm"], 500.0)
+            if p.Rainfall_3Day is None:
+                p.Rainfall_3Day = min(weather["rain_3day_mm"], 1000.0)
+            if p.Rainfall_7Day is None:
+                p.Rainfall_7Day = min(weather["rain_7day_mm"], 1500.0)
+            if p.Soil_Moisture_Content is None and weather["soil_moisture_pct"] is not None:
+                p.Soil_Moisture_Content = min(weather["soil_moisture_pct"] / 100, 1.0)
 
 
 @app.post("/api/v1/predict", dependencies=[Depends(require_api_key)])
