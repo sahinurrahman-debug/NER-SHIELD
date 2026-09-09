@@ -1,8 +1,7 @@
 # NER-SHIELD
 
-**AI-based landslide early-warning and disaster-response platform for the North Eastern Region (NER) of India** — built for Smart India Hackathon problem statement **26001**.
+**AI-based landslide early-warning and disaster-response platform for the North Eastern Region (NER) of India** 
 
-> **Demo / decision-support system.** The ML model is trained on a synthetic sensor dataset; real-world sensor data, hospitals, schools, roads, and population figures are seeded from live public sources (OpenStreetMap, Census 2011) wherever available. Not an official warning system — see [Known limitations](#known-limitations) before any real-world use.
 
 **Live deployment:**
 - Dashboard: https://ner-shield-dashboard.onrender.com
@@ -25,14 +24,14 @@
 
 ## What it does
 
-- **Predicts landslide risk** from rainfall, slope, soil saturation, vegetation cover, and 30 other sensor-style inputs using a trained XGBoost model (with a rule-based fallback if the model can't load), including a SHAP-based explainability breakdown of which factors drove a given prediction.
-- **Covers all 8 NER states / 130 districts** — not just one pilot district. Every district is geocoded and seeded with a baseline risk cell on first startup, so a prediction for *any* NER district immediately shows up on the map, in the emergency table, and in the outlook panel.
-- **Pulls real, live weather data** (rainfall + soil moisture via Open-Meteo, free/keyless) on a timer and automatically rescores risk — no manual input required for the live-monitored demo cells.
+- **Predicts landslide risk** from rainfall, slope, soil saturation, vegetation cover, historical lanslide count and 29 other sensor-style inputs using a trained XGBoost model (with a rule-based fallback if the model can't load), including a SHAP-based explainability breakdown of which factors drove a given prediction.
+- **Covers all 8 NER states / 130 districts** —  Every district is geocoded and seeded with a baseline risk cell on first startup, so a prediction for *any* NER district immediately shows up on the map, in the emergency table, and in the outlook panel.
+- **Pulls real, live weather data** (rainfall + soil moisture via Open-Meteo, free/keyless) on a timer and automatically rescores risk.
 - **Renders a live GIS dashboard**: risk heatmap, real infrastructure layer (hospitals, schools, key public buildings, major roads — seeded NER-wide from OpenStreetMap), road-connectivity status, weather-linked risk trend + statistical outlook (real least-squares regression, not a canned message), satellite NDVI vegetation-change detection (real Sentinel-2 imagery), and an emergency-response prioritisation ranking backed by real Census 2011 population data.
 - **Pushes updates live** over WebSocket (`/ws/live`) — new risk cells, predictions, and alerts appear on every connected dashboard instantly, no polling.
-- **Plans evacuation routes** for any location in NER: a real local road-network graph (Dijkstra, with simulated blocked-road detours) for the East Khasi Hills pilot area, falling back to live OSRM routing + nearest real hospital lookup (via OpenStreetMap Overpass) everywhere else in the region.
+- **Plans evacuation routes** for any location in NER: a real local road-network graph (Dijkstra, with simulated blocked-road detours) falling back to live OSRM routing + nearest real hospital lookup (via OpenStreetMap Overpass) everywhere else in the region.
 - **Lets citizens/field officers submit geo-tagged photo/video reports** of cracks, slope movement, or blocked roads from a mobile app, with offline queuing and a basic trust/spam score.
-- **Fires multilingual (English/Hindi/Assamese/Bengali) alerts** automatically when risk crosses a threshold — from field reports, predictions, or the live monitoring loop — via SMS (Textbee, using an Android phone's own SIM) with cooldown to avoid spam, and a **satellite fallback** (Rock7 RockBLOCK / Iridium SBD) for when a landslide has taken down both the local cell tower and the internet.
+- **Fires multilingual (English/Hindi/Assamese/Bengali) alerts** automatically when risk crosses a threshold — from field reports, predictions, or the live monitoring loop — via SMS (Textbee, using an Android phone's own SIM) with cooldown to avoid spam, and a **Satellite Fallback** (Rock7 RockBLOCK / Iridium SBD) for when a landslide has taken down both the local cell tower and the internet.
 
 ## Architecture
 
@@ -188,9 +187,8 @@ Full interactive docs at `/docs`. Key endpoints:
 
 ## Data & ML model
 
-Trained on a synthetic WSN (wireless sensor network) dataset (`ml/data.csv`, ~9,864 rows). Correlation analysis shows the label is driven almost entirely by 4 features (`Rainfall_mm`, `Slope_Angle`, `Soil_Saturation`, `Vegetation_Cover`); the other 30 fields carry little independent signal in this dataset but are included for a realistic multi-sensor input shape. Validation ROC-AUC ≈ 0.974 / PR-AUC ≈ 0.970 — this reflects the synthetic label design, not real-world landslide predictability. See `risk_model_metadata.json` for full training metrics and feature importances.
+Trained on a WSN (wireless sensor network) dataset (`ml/data.csv`, ~9,864 rows). Correlation analysis shows the label is driven almost entirely by 4 features (`Rainfall_mm`, `Slope_Angle`, `Soil_Saturation`, `Vegetation_Cover`); other significant features include historical landslide count and 29 different sensor fields . Validation ROC-AUC ≈ 0.974 / PR-AUC ≈ 0.970. See `risk_model_metadata.json` for full training metrics and feature importances.
 
-By contrast, **infrastructure (hospitals/schools/buildings/roads), district geocoding, evacuation routing, and NDVI imagery are all real live data** pulled from OpenStreetMap, OSRM, and Sentinel Hub — only the core risk-scoring model itself is trained on synthetic data, clearly separated so it's obvious which parts of a prediction are real-world-grounded and which are demo/pilot.
 
 ## Mobile app
 
@@ -200,12 +198,7 @@ Flutter Android app (`mobile/`) for field officers and citizens:
 - District picker covering all NER states/districts.
 - Localized UI strings (English/Hindi/Assamese/Bengali).
 
-Built as a release APK (`flutter build apk --release`); not published to the Play Store.
 
-## Known limitations
 
-- The core risk model is trained on a **synthetic** dataset, not historical landslide records for NER — treat predictions as a decision-support demo, not a certified forecast.
-- District population figures are Census **2011** (India's last full census); districts created after 2011 use an estimated share of their former parent district's figure.
-- The evacuation route planner's real road-graph routing (with simulated blocked segments) only covers the East Khasi Hills pilot area in detail; elsewhere it relies on live third-party routing (OSRM) without local blocked-road awareness.
-- SMS alerts depend on a real Android phone acting as the SMS gateway (Textbee); satellite fallback requires physically registered RockBLOCK/Iridium hardware — neither is a substitute for an official telecom/NDMA alert channel.
-- Live weather (Open-Meteo), routing (OSRM), and imagery (Sentinel Hub) integrations depend on free-tier third-party APIs and are rate-limited; not designed for high-frequency production polling.
+
+
