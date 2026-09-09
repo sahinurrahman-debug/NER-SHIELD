@@ -1997,8 +1997,8 @@ def risk_cells(min_score: float = 0, db: Session = Depends(get_db)):
     if not 0 <= min_score <= 100:
         raise HTTPException(422, "min_score must be 0 to 100")
     rows = db.execute(text("""
-        SELECT cell_id,district,slope_deg,rain_24h_mm,soil_moisture_pct,historical_density,
-               risk_score,severity,updated_at,ST_AsGeoJSON(geom) AS geometry
+        SELECT cell_id,district,slope_deg,elevation_m,aspect_deg,rain_24h_mm,soil_moisture_pct,
+               historical_density,risk_score,severity,updated_at,ST_AsGeoJSON(geom) AS geometry
         FROM risk_cells WHERE risk_score >= :score ORDER BY risk_score DESC
     """), {"score": min_score}).mappings().all()
     return {"type": "FeatureCollection", "features": [_row_to_feature(row) for row in rows]}
