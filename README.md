@@ -1,6 +1,6 @@
 # NER-SHIELD
 
-** AI Landslide Early Warning System That Still Alerts When the Network Goes Down** 
+**AI Landslide Early Warning System That Still Alerts When the Network Goes Down** 
 
 **Live deployment:**
 - Dashboard: https://ner-shield-dashboard.onrender.com
