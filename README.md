@@ -1,6 +1,6 @@
 # NER-SHIELD
 
-**AI-based early-warning and landslide risk monitoring system for the North Eastern Region (NER) of India** 
+** AI Landslide Early Warning System That Still Alerts When the Network Goes Down** 
 
 **Live deployment:**
 - Dashboard: https://ner-shield-dashboard.onrender.com
