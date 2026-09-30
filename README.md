@@ -43,33 +43,8 @@
 
 ## Architecture
 
-```
-Open-Meteo        OpenStreetMap Overpass     Sentinel Hub      OSRM        Open Topo Data      NASA COOLR
-(rainfall+soil)   (hospitals/schools/roads)  (NDVI imagery)    (routing)   (SRTM 30m DEM)       (landslide events)
-      |                    |                       |              |              |                    |
-      v                    v                       v              v              v                    v
-                              FastAPI backend (Python 3.12, Docker on Render)
-                              - PostGIS: risk_cells, infrastructure, field_reports, alerts,
-                                prediction_log, ndvi_readings, historical_landslides
-                              - Trained XGBoost model (risk_model.joblib) + rule-based
-                                fallback + SHAP explainability (TreeExplainer)
-                              - Background monitor loop (live rescoring every 120s)
-                              - 5 one-time background seed tasks (hospitals, schools/roads/
-                                buildings, district baselines, terrain, historical landslides)
-                              - Real-defaults enrichment at /predict time (terrain, landslide
-                                history, live weather) for any district/location
-                              - Alert pipeline: multilingual SMS (Textbee) -> satellite
-                                fallback (RockBLOCK/Iridium SBD)
-                              - WebSocket broadcast (/ws/live) for real-time dashboard updates
-                              - NetworkX Dijkstra local road graph (evacuation routing)
-                                          |                                  |
-                                          v                                  v
-                    React + Leaflet dashboard (Render Static Site, PWA)   Flutter mobile app (Android)
-                    - GIS map, alerts, prioritisation, outlook            - Field reports (photo/video,
-                    - Evacuation planner, NDVI panel, SHAP sandbox          offline queue via shared_preferences)
-                    - Offline app-shell caching (vite-plugin-pwa)          - Alerts feed, district picker
-                                                                           - Localized UI (en/hi/as/bn)
-```
+<img align="center" alt="architecture diagram" src="architecture.png" height="1000" width="100%"/>
+
 
 | Piece | Stack | Deployed as |
 |---|---|---|
